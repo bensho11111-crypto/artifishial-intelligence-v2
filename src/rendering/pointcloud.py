@@ -20,12 +20,15 @@ def build_pointcloud_payload(state: "WorldState",
         view = state.state_at(current_ts)
     else:
         view = state
-    return view.to_pointcloud()
+    # Include all observations; is_floor array lets the frontend
+    # colour floor vs fish returns differently.
+    return view.to_pointcloud(floor_only=False)
 
 
 def extract_boat(state: "WorldState") -> dict:
     """Return the most recent boat position from the state."""
-    pc = state.to_pointcloud()
+    # Use floor-only for boat position — fish echoes are not the boat location.
+    pc = state.to_pointcloud(floor_only=True)
     if not pc["x"]:
         return {}
     return {

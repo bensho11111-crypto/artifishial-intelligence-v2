@@ -128,9 +128,12 @@ class _Boat:
 
     def step(self, dt: float):
         self.t += dt
-        self.heading = (self.heading
-            + (9.0*math.sin(self.t*0.040) + 2.5*math.sin(self.t*0.14))*dt) % 360.0
-        self.speed = max(0.5, SPEED_KTS + 0.55*math.sin(self.t*0.11))
+        # Constant ~3°/s turn closes a full circle in 120s at 3.5kts (radius ~34m).
+        # Small sinusoidal variation adds realism without breaking the closure.
+        # A closed loop means depth at t=0 ≈ depth at t=120 — no systematic trend.
+        turn_rate = 3.0 + 1.5 * math.sin(self.t * 0.4)
+        self.heading = (self.heading + turn_rate * dt) % 360.0
+        self.speed = max(0.5, SPEED_KTS + 0.3 * math.sin(self.t * 0.11))
         speed_ms = self.speed * 0.5144
         h = math.radians(self.heading)
         self.lat += speed_ms*dt*math.cos(h)/111_320.0
@@ -169,7 +172,7 @@ class GeneratedSession:
                 }
                 for s in self.fish_schools
             ],
-            "floor_grid": self.floor.sample_grid(step=5),
+            "floor_grid": self.floor.sample_grid(step=1),  # 2m/cell — matches FloorModel resolution
         }
 
 

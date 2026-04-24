@@ -229,7 +229,7 @@
   <input type="range" id="replay-slider" min="0" max="1000" value="0" step="1" />
   <div id="replay-time">0:00 / 0:00</div>
   <div class="rp-controls">
-    <button class="rp-btn" id="btn-pause-play">▶ PLAY</button>
+    <button class="rp-btn" id="btn-pause-play">⏸ PAUSE</button>
     <label style="font-size:11px;color:#7ecfe0;">SPEED</label>
     <select id="speed-select">
       <option value="0.25">0.25×</option>
@@ -440,10 +440,12 @@ scene.fog = new THREE.FogExp2(0x080e14, 0.004);
 
 const camera = new THREE.PerspectiveCamera(55, window.innerWidth / window.innerHeight, 0.1, 5000);
 camera.up.set(0, 0, 1);   // Z-up
-camera.position.set(0, -120, 80);
+// Start from a side angle so the water column is visible:
+// boat at Z=0, floor at Z≈-20m, camera slightly below surface looking across
+camera.position.set(-60, -100, -8);
 
 const controls = new THREE.OrbitControls(camera, renderer.domElement);
-controls.target.set(0, 0, 0);
+controls.target.set(20, 0, -12);   // look at mid-water-column
 controls.enableDamping = true;
 controls.dampingFactor = 0.08;
 controls.screenSpacePanning = false;
@@ -457,7 +459,24 @@ const dirLight = new THREE.DirectionalLight(0x4ae0c8, 0.6);
 dirLight.position.set(100, 100, 200);
 scene.add(dirLight);
 
-// Grid
+// ── Water surface plane at Z=0 ────────────────────────────────────────────────
+// Gives context: boat sits on this, floor is below, points are underwater.
+{
+  const waterGeo = new THREE.PlaneGeometry(600, 600);
+  const waterMat = new THREE.MeshPhongMaterial({
+    color: 0x0a2a44,
+    transparent: true,
+    opacity: 0.38,
+    side: THREE.DoubleSide,
+    depthWrite: false,
+  });
+  const water = new THREE.Mesh(waterGeo, waterMat);
+  // PlaneGeometry is XY; rotate so it lies in the XY plane at Z=0 (Z-up scene)
+  water.rotation.x = Math.PI / 2;
+  scene.add(water);
+}
+
+// Grid on the water surface
 const gridHelper = new THREE.GridHelper(400, 40, 0x0e2a38, 0x0a1e28);
 gridHelper.rotation.x = Math.PI / 2;
 scene.add(gridHelper);
@@ -499,10 +518,14 @@ scene.add(pointCloud);
 
 function updatePointCloud(pc) {
   const x = pc.x || [], y = pc.y || [], depth = pc.depth || [];
+  const isFloor = pc.is_floor || [];   // true = bottom return, false = fish echo
   const n = x.length;
   if (n === 0) return;
 
-  const maxD = Math.max(...depth, 1);
+  // Compute max depth using only floor observations for the colour scale
+  const floorDepths = depth.filter((_, i) => isFloor[i] !== false);
+  const maxD = Math.max(...(floorDepths.length ? floorDepths : depth), 1);
+
   const pos   = new Float32Array(n * 3);
   const col   = new Float32Array(n * 3);
 
@@ -511,7 +534,13 @@ function updatePointCloud(pc) {
     pos[i*3+1] = y[i];
     pos[i*3+2] = -depth[i];   // Z-up: depth is negative Z
 
-    const c = depthColour(depth[i], maxD);
+    let c;
+    if (isFloor[i] === false) {
+      // Fish echo — orange so it's visually distinct from the floor point cloud
+      c = { r: 1.0, g: 0.55, b: 0.05 };
+    } else {
+      c = depthColour(depth[i], maxD);
+    }
     col[i*3]   = c.r;
     col[i*3+1] = c.g;
     col[i*3+2] = c.b;
@@ -666,9 +695,9 @@ function buildGroundTruthFloor(floor_grid) {
   geo.setIndex(indices);
   geo.computeVertexNormals();
 
-  // Solid surface
+  // Solid surface — red so it's visually distinct from the sonar point cloud
   const solid = new THREE.Mesh(geo, new THREE.MeshPhongMaterial({
-    vertexColors: true, transparent: true, opacity: 0.45,
+    color: 0xcc2222, transparent: true, opacity: 0.40,
     side: THREE.DoubleSide, depthWrite: false,
   }));
   gtFloorGroup.add(solid);
@@ -676,7 +705,7 @@ function buildGroundTruthFloor(floor_grid) {
   // Wireframe overlay
   const wireGeo = new THREE.WireframeGeometry(geo);
   const wire = new THREE.LineSegments(wireGeo,
-    new THREE.LineBasicMaterial({ color: 0x1e4a5c, transparent: true, opacity: 0.18 }));
+    new THREE.LineBasicMaterial({ color: 0xff4444, transparent: true, opacity: 0.25 }));
   gtFloorGroup.add(wire);
 
   scene.add(gtFloorGroup);

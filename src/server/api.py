@@ -149,7 +149,7 @@ async def ws_state(ws: WebSocket):
             payload = _build_update(ts)
 
             # Include mesh every 5 seconds
-            if now - _last_mesh_ts >= 5.0 and _world_state is not None:
+            if now - _last_mesh_ts >= 0.5 and _world_state is not None:
                 from rendering.mesh import build_mesh
                 mesh = build_mesh(_world_state, ts)
                 if mesh is not None:

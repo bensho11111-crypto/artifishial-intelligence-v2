@@ -18,14 +18,15 @@ if TYPE_CHECKING:
     from ticks.models import Observation
 
 # Column indices
-_TS    = 0
-_EAST  = 1
-_NORTH = 2
-_DEPTH = 3
-_CONF  = 4
-_HDG   = 5
-_SPD   = 6
-_NCOLS = 7
+_TS      = 0
+_EAST    = 1
+_NORTH   = 2
+_DEPTH   = 3
+_CONF    = 4
+_HDG     = 5
+_SPD     = 6
+_IS_FLOOR = 7   # 1.0 = bottom return, 0.0 = fish/mid-water echo
+_NCOLS   = 8
 
 
 class WorldState:
@@ -44,7 +45,8 @@ class WorldState:
 
     def add(self, obs: "Observation") -> None:
         row = np.array([[obs.ts, obs.east_m, obs.north_m, obs.depth_m,
-                         obs.confidence, obs.heading_deg, obs.speed_kts]],
+                         obs.confidence, obs.heading_deg, obs.speed_kts,
+                         1.0 if obs.is_floor else 0.0]],
                        dtype=np.float32)
         self._data = row if self._data is None else np.vstack((self._data, row))
 
@@ -72,16 +74,20 @@ class WorldState:
 
     # ── export ────────────────────────────────────────────────────────────────
 
-    def to_pointcloud(self) -> dict:
+    def to_pointcloud(self, floor_only: bool = False) -> dict:
         """
         Export as a dict of lists suitable for JSON serialisation.
-        All arrays are parallel (same length).
+        floor_only=True: exclude mid-water fish echo returns (is_floor==0).
         """
         empty = {"x": [], "y": [], "depth": [], "confidence": [],
-                 "ts": [], "heading": [], "speed_kts": []}
+                 "ts": [], "heading": [], "speed_kts": [], "is_floor": []}
         if self._data is None or len(self._data) == 0:
             return empty
         d = self._data
+        if floor_only:
+            d = d[d[:, _IS_FLOOR] > 0.5]
+        if len(d) == 0:
+            return empty
         return {
             "x":          d[:, _EAST].tolist(),
             "y":          d[:, _NORTH].tolist(),
@@ -90,6 +96,7 @@ class WorldState:
             "ts":         d[:, _TS].tolist(),
             "heading":    d[:, _HDG].tolist(),
             "speed_kts":  d[:, _SPD].tolist(),
+            "is_floor":   (d[:, _IS_FLOOR] > 0.5).tolist(),
         }
 
     def to_mesh(self, min_points: int = 4) -> Optional[dict]:
@@ -107,11 +114,18 @@ class WorldState:
         except ImportError:
             return None
 
-        pts = self._data[:, [_EAST, _NORTH]]
-        depths = self._data[:, _DEPTH]
+        # Only triangulate bottom returns — fish echoes create duplicate 2D
+        # inputs that corrupt Delaunay and pull the mesh to shallow depths.
+        floor_mask = self._data[:, _IS_FLOOR] > 0.5
+        data = self._data[floor_mask]
+        if len(data) < min_points:
+            return None
 
-        tri = Delaunay(pts)
-        verts = np.column_stack([pts, -depths])   # Z = -depth (down)
+        pts    = data[:, [_EAST, _NORTH]]
+        depths = data[:, _DEPTH]
+
+        tri   = Delaunay(pts)
+        verts = np.column_stack([pts, -depths])   # Z = -depth (Z-up scene)
 
         return {
             "vertices": verts.tolist(),

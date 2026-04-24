@@ -38,6 +38,9 @@ class ReplayController:
         self._paused = True
 
     def play(self) -> None:
+        # If the recording ended, restart from the beginning.
+        if self._position >= self._duration:
+            self._position = 0.0
         self._paused = False
 
     def set_speed(self, multiplier: float) -> None:
@@ -65,7 +68,10 @@ class ReplayController:
                 if self._on_seek:
                     self._on_seek()
 
-        # Advance time if not paused
+        # Advance time if not paused; auto-pause at end so the user
+        # can see the final state rather than silently looping.
         if not self._paused:
-            self._position = min(self._duration,
-                                 self._position + dt * self._speed)
+            self._position += dt * self._speed
+            if self._position >= self._duration:
+                self._position = self._duration
+                self._paused = True   # let play() restart from 0

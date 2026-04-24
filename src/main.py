@@ -42,8 +42,7 @@ def _prebake(tick_iter, fusion) -> "WorldState":
     from processing.world_state import WorldState
     ws = WorldState()
     for tick in tick_iter:
-        obs = fusion.process(tick)
-        if obs is not None:
+        for obs in fusion.process(tick):   # list: [bottom] + [fish...]
             ws.add(obs)
     return ws
 
@@ -55,8 +54,7 @@ async def _live_loop(serial_port: str, fusion, world_state):
     reader = LiveNMEAReader(serial_port)
     async for gps_tick in reader.stream():
         tick = Tick(ts=gps_tick.ts, gps=gps_tick)
-        obs  = fusion.process(tick)
-        if obs is not None:
+        for obs in fusion.process(tick):
             world_state.add(obs)
 
 

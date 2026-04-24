@@ -1,19 +1,25 @@
 """
 src/processing/fusion.py
 
-Stateful Kalman filter that fuses GpsTick + SonarTick → Observation.
+Stateful Kalman filter that fuses GpsTick + SonarTick → Observation(s).
 
 Call process(tick) for each tick in timestamp order.
-The filter emits an Observation whenever it has both a GPS fix and
-a pending sonar reading.
+Returns a list of Observations on each valid GPS tick:
+  [0]  bottom return (depth = floor depth)
+  [1+] fish / secondary returns found above the bottom in the echo array
 
 Deterministic: all timestamps come from ticks, not from time.time().
 """
 from __future__ import annotations
 import math
-from typing import Optional
+from typing import List, Optional
 import numpy as np
 from ticks.models import Tick, SonarTick, GpsTick, Observation
+
+# Must match the constants used in the sonar echo generator
+_ECHO_MAX_RANGE_M = 60.0
+_FISH_AMPLITUDE_THRESHOLD = 40   # echo counts — noise floor is 2-15
+_FISH_MIN_SEPARATION_M    = 1.0  # ignore peaks closer than this
 
 
 def _latlon_to_enu(lat: float, lon: float,
@@ -24,65 +30,111 @@ def _latlon_to_enu(lat: float, lon: float,
     return east, north
 
 
+def _parse_echo_returns(echo: bytes, floor_depth_m: float,
+                        east_m: float, north_m: float,
+                        ts: float, heading_deg: float,
+                        speed_kts: float) -> List[Observation]:
+    """
+    Scan the echo array for secondary amplitude peaks above the bottom.
+    Each peak becomes a fish/mid-water Observation.
+
+    Peaks are found by scanning for regions above _FISH_AMPLITUDE_THRESHOLD,
+    then taking the maximum within each region.  Only returns above the floor
+    (by at least 1m) are reported.
+    """
+    if not echo or len(echo) < 10:
+        return []
+
+    n = len(echo)
+    floor_idx = int(floor_depth_m / _ECHO_MAX_RANGE_M * n)
+    min_sep_idx = max(1, int(_FISH_MIN_SEPARATION_M / _ECHO_MAX_RANGE_M * n))
+    # Search up to 1m above the floor return, skip first few indices (near-field noise)
+    near_field = int(0.5 / _ECHO_MAX_RANGE_M * n)
+    search_end = max(near_field + 1, floor_idx - min_sep_idx)
+
+    observations: List[Observation] = []
+    i = near_field
+    while i < search_end:
+        if echo[i] >= _FISH_AMPLITUDE_THRESHOLD:
+            # Walk forward to find the peak of this return
+            peak_val = echo[i]
+            peak_idx = i
+            j = i + 1
+            while j < search_end and echo[j] >= _FISH_AMPLITUDE_THRESHOLD // 2:
+                if echo[j] > peak_val:
+                    peak_val = echo[j]
+                    peak_idx = j
+                j += 1
+            fish_depth = peak_idx * _ECHO_MAX_RANGE_M / n
+            conf = round(min(0.65, peak_val / 200.0), 3)
+            observations.append(Observation(
+                ts          = ts,
+                east_m      = east_m,
+                north_m     = north_m,
+                depth_m     = fish_depth,
+                confidence  = conf,
+                heading_deg = heading_deg,
+                speed_kts   = speed_kts,
+                is_floor    = False,
+            ))
+            i = max(j, i + min_sep_idx)
+        else:
+            i += 1
+
+    return observations
+
+
 class Fusion:
     """
     4-state Kalman filter: [east, north, ve, vn] in local ENU.
 
-    Process noise: Q = diag([0.1, 0.1, 0.5, 0.5])
-    GPS noise:     R = diag([4.0, 4.0])  (2m sigma)
+    process() returns a list:
+      - index 0: bottom Observation (always present when GPS+sonar available)
+      - index 1+: secondary echo returns (fish arches) above the bottom
     """
 
-    TRANSD_DRAFT_M = 0.30     # transducer depth below waterline
+    TRANSD_DRAFT_M = 0.30
     MAX_SPEED_KTS  = 15.0
     MAX_HDOP       = 5.0
-    SOUND_VEL_MS   = 1500.0
 
     def __init__(self):
-        self._origin: Optional[tuple] = None   # (lat, lon) set on first fix
+        self._origin: Optional[tuple] = None
         self._x = np.zeros(4)
         self._P = np.eye(4) * 100.0
         self._Q = np.diag([0.1, 0.1, 0.5, 0.5])
         self._R = np.diag([4.0, 4.0])
         self._last_ts: float = 0.0
         self._pending_sonar: Optional[SonarTick] = None
-        self._pending_gps:   Optional[GpsTick]   = None
 
-    # ── public API ────────────────────────────────────────────────────────────
-
-    def process(self, tick: Tick) -> Optional[Observation]:
-        """Feed one Tick. Returns an Observation or None."""
+    def process(self, tick: Tick) -> List[Observation]:
+        """
+        Feed one Tick. Returns a list of Observations (may be empty).
+        Index 0 is the bottom return; subsequent entries are fish echoes.
+        """
         if tick.sonar:
             self._pending_sonar = tick.sonar
         if tick.gps:
             return self._update_gps(tick.gps)
-        return None
+        return []
 
     def reset(self, preserve_position: bool = True) -> None:
-        """
-        Reset for seek / loop restart.
-        preserve_position=True: keep last known ENU position so the boat
-        marker does not snap to (0,0).  Only velocity is zeroed.
-        """
         if preserve_position:
-            self._x[2] = 0.0   # ve
-            self._x[3] = 0.0   # vn
+            self._x[2] = 0.0
+            self._x[3] = 0.0
         else:
             self._x = np.zeros(4)
         self._P = np.eye(4) * 100.0
         self._pending_sonar = None
-        # _origin and _x[0:2] preserved if preserve_position=True
 
     @property
     def origin(self) -> Optional[tuple]:
         return self._origin
 
-    # ── internal ──────────────────────────────────────────────────────────────
-
-    def _update_gps(self, gps: GpsTick) -> Optional[Observation]:
+    def _update_gps(self, gps: GpsTick) -> List[Observation]:
         if not gps.lat or not gps.lon:
-            return None
+            return []
         if gps.speed_kts > self.MAX_SPEED_KTS or gps.hdop > self.MAX_HDOP:
-            return None
+            return []
 
         dt = max(gps.ts - self._last_ts, 0.001)
         self._last_ts = gps.ts
@@ -92,12 +144,10 @@ class Fusion:
 
         east, north = _latlon_to_enu(gps.lat, gps.lon, *self._origin)
 
-        # Kalman predict
         F = np.array([[1,0,dt,0],[0,1,0,dt],[0,0,1,0],[0,0,0,1]])
         self._x = F @ self._x
         self._P = F @ self._P @ F.T + self._Q
 
-        # Kalman update
         H = np.array([[1,0,0,0],[0,1,0,0]])
         y = np.array([east, north]) - H @ self._x
         S = H @ self._P @ H.T + self._R
@@ -106,20 +156,28 @@ class Fusion:
         self._P = (np.eye(4) - K @ H) @ self._P
 
         if self._pending_sonar is None:
-            return None
+            return []
 
         sonar = self._pending_sonar
+        e     = float(self._x[0])
+        n_pos = float(self._x[1])
         depth = max(0.01, sonar.depth_m - self.TRANSD_DRAFT_M)
         conf  = (sonar.signal_db / 100.0) * (
             1 - 0.3 * min(1.0, gps.speed_kts / self.MAX_SPEED_KTS)
         ) * (1 - 0.2 * min(1.0, (gps.hdop - 1.0) / (self.MAX_HDOP - 1.0)))
 
-        return Observation(
-            ts          = gps.ts,
-            east_m      = float(self._x[0]),
-            north_m     = float(self._x[1]),
-            depth_m     = depth,
-            confidence  = round(max(0.0, min(1.0, conf)), 3),
-            heading_deg = gps.heading_deg,
-            speed_kts   = gps.speed_kts,
+        bottom = Observation(
+            ts=gps.ts, east_m=e, north_m=n_pos,
+            depth_m=depth,
+            confidence=round(max(0.0, min(1.0, conf)), 3),
+            heading_deg=gps.heading_deg,
+            speed_kts=gps.speed_kts,
         )
+
+        # Parse echo array for secondary returns (fish arches)
+        fish = _parse_echo_returns(
+            sonar.echo, sonar.depth_m, e, n_pos,
+            gps.ts, gps.heading_deg, gps.speed_kts,
+        )
+
+        return [bottom] + fish

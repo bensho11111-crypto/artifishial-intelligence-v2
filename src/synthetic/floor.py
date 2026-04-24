@@ -14,8 +14,8 @@ from typing import Optional
 class FloorModel:
     GRID_SIZE_M = 500
     CELL_SIZE_M = 2.0
-    MIN_DEPTH_M = 0.9
-    MAX_DEPTH_M = 22.0
+    MIN_DEPTH_M = 10.9
+    MAX_DEPTH_M = 32.0
 
     def __init__(self, seed: int = 1337):
         n = int(self.GRID_SIZE_M / self.CELL_SIZE_M)
