@@ -1,0 +1,21 @@
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+env/
+*.egg-info/
+dist/
+build/
+
+# recordings
+data/*.ticks
+data/*.sl2
+data/*.nmea
+
+# generated ground truth (regenerate from main.py)
+data/ground_truth.json
+
+# OS
+.DS_Store
+Thumbs.db

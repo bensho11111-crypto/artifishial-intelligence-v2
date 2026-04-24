@@ -1,0 +1,923 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Artifishial Intelligence v2</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: #080e14;
+      color: #c8e6f0;
+      font-family: 'Courier New', monospace;
+      font-size: 13px;
+      overflow: hidden;
+      height: 100vh;
+      width: 100vw;
+    }
+
+    #canvas-container {
+      position: fixed;
+      inset: 0;
+    }
+
+    canvas { display: block; }
+
+    /* ── HUD ─────────────────────────────────────────────────────────────── */
+    #hud {
+      position: fixed;
+      top: 14px;
+      left: 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      pointer-events: none;
+      z-index: 10;
+    }
+
+    .hud-row {
+      display: flex;
+      gap: 18px;
+    }
+
+    .hud-badge {
+      background: rgba(8, 22, 32, 0.82);
+      border: 1px solid #1e4a5c;
+      border-radius: 4px;
+      padding: 4px 10px;
+      font-size: 11px;
+      letter-spacing: 0.06em;
+      color: #7ecfe0;
+    }
+
+    .hud-badge span { color: #e0f4ff; font-weight: bold; }
+    .hud-title { font-size: 15px; font-weight: bold; color: #4ae0c8; letter-spacing: 0.12em; }
+
+    /* ── Status / connection ─────────────────────────────────────────────── */
+    #status {
+      position: fixed;
+      top: 14px;
+      right: 14px;
+      background: rgba(8,22,32,0.82);
+      border: 1px solid #1e4a5c;
+      border-radius: 4px;
+      padding: 5px 12px;
+      font-size: 11px;
+      letter-spacing: 0.05em;
+      z-index: 10;
+    }
+
+    #status.ok   { border-color: #1a7a5c; color: #4ae0b0; }
+    #status.warn { border-color: #7a5a1a; color: #e0c04a; }
+    #status.err  { border-color: #7a1a1a; color: #e04a4a; }
+
+    /* ── Compass ─────────────────────────────────────────────────────────── */
+    #compass {
+      position: fixed;
+      bottom: 100px;
+      right: 20px;
+      width: 72px;
+      height: 72px;
+      z-index: 10;
+      pointer-events: none;
+    }
+
+    /* ── Ground truth panel ──────────────────────────────────────────────── */
+    #gt-panel {
+      position: fixed;
+      bottom: 14px;
+      left: 14px;
+      background: rgba(8,22,32,0.82);
+      border: 1px solid #1e4a5c;
+      border-radius: 6px;
+      padding: 8px 12px;
+      display: none;
+      flex-direction: column;
+      gap: 6px;
+      z-index: 10;
+      min-width: 160px;
+    }
+
+    #gt-panel .gt-title {
+      font-size: 10px;
+      letter-spacing: 0.12em;
+      color: #4ae0c8;
+      text-transform: uppercase;
+    }
+
+    .gt-btn {
+      background: rgba(30,74,92,0.5);
+      border: 1px solid #1e4a5c;
+      border-radius: 3px;
+      color: #7ecfe0;
+      cursor: pointer;
+      font-family: inherit;
+      font-size: 11px;
+      padding: 4px 10px;
+      text-align: center;
+      transition: background 0.15s;
+    }
+
+    .gt-btn:hover { background: rgba(30,74,92,0.9); }
+    .gt-btn.active { border-color: #4ae0c8; color: #4ae0c8; }
+
+    /* ── Replay controls ─────────────────────────────────────────────────── */
+    #replay-panel {
+      position: fixed;
+      bottom: 14px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: rgba(8,22,32,0.90);
+      border: 1px solid #1e4a5c;
+      border-radius: 6px;
+      padding: 10px 16px;
+      display: none;
+      flex-direction: column;
+      gap: 8px;
+      z-index: 10;
+      min-width: 340px;
+      align-items: center;
+    }
+
+    #replay-panel .rp-title {
+      font-size: 10px;
+      letter-spacing: 0.12em;
+      color: #4ae0c8;
+      text-transform: uppercase;
+      align-self: flex-start;
+    }
+
+    #replay-slider {
+      width: 100%;
+      accent-color: #4ae0c8;
+      cursor: pointer;
+    }
+
+    #replay-time {
+      font-size: 11px;
+      color: #7ecfe0;
+      align-self: flex-end;
+    }
+
+    .rp-controls {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+    }
+
+    .rp-btn {
+      background: rgba(30,74,92,0.5);
+      border: 1px solid #1e4a5c;
+      border-radius: 3px;
+      color: #7ecfe0;
+      cursor: pointer;
+      font-family: inherit;
+      font-size: 12px;
+      padding: 4px 12px;
+      transition: background 0.15s;
+    }
+
+    .rp-btn:hover { background: rgba(30,74,92,0.9); }
+    .rp-btn.active { border-color: #4ae0c8; color: #4ae0c8; }
+
+    #speed-select {
+      background: rgba(8,22,32,0.9);
+      border: 1px solid #1e4a5c;
+      border-radius: 3px;
+      color: #7ecfe0;
+      font-family: inherit;
+      font-size: 11px;
+      padding: 3px 6px;
+      cursor: pointer;
+    }
+
+    #speed-select:focus { outline: none; border-color: #4ae0c8; }
+  </style>
+</head>
+<body>
+
+<div id="canvas-container"></div>
+
+<!-- HUD -->
+<div id="hud">
+  <div class="hud-badge hud-title">ARTIFISHIAL INTELLIGENCE v2</div>
+  <div class="hud-row">
+    <div class="hud-badge">POINTS <span id="hud-points">0</span></div>
+    <div class="hud-badge">DEPTH <span id="hud-depth">—</span> m</div>
+    <div class="hud-badge">SPEED <span id="hud-speed">—</span> kts</div>
+    <div class="hud-badge">HDG <span id="hud-heading">—</span>°</div>
+  </div>
+</div>
+
+<!-- Connection status -->
+<div id="status" class="warn">CONNECTING…</div>
+
+<!-- Compass -->
+<canvas id="compass" width="72" height="72"></canvas>
+
+<!-- Ground truth panel -->
+<div id="gt-panel">
+  <div class="gt-title">GROUND TRUTH</div>
+  <button class="gt-btn active" id="btn-fish">Show Fish</button>
+  <button class="gt-btn active" id="btn-floor">Show Floor</button>
+</div>
+
+<!-- Replay controls -->
+<div id="replay-panel">
+  <div class="rp-title">REPLAY</div>
+  <input type="range" id="replay-slider" min="0" max="1000" value="0" step="1" />
+  <div id="replay-time">0:00 / 0:00</div>
+  <div class="rp-controls">
+    <button class="rp-btn" id="btn-pause-play">▶ PLAY</button>
+    <label style="font-size:11px;color:#7ecfe0;">SPEED</label>
+    <select id="speed-select">
+      <option value="0.25">0.25×</option>
+      <option value="0.5">0.5×</option>
+      <option value="1" selected>1×</option>
+      <option value="2">2×</option>
+      <option value="4">4×</option>
+      <option value="8">8×</option>
+    </select>
+  </div>
+</div>
+
+<!-- Three.js from CDN -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r134/three.min.js"></script>
+<script>
+// ─────────────────────────────────────────────────────────────────────────────
+//  OrbitControls (inline, r134 compatible)
+// ─────────────────────────────────────────────────────────────────────────────
+(function(){
+  THREE.OrbitControls = function(object, domElement) {
+    this.object = object;
+    this.domElement = domElement || document;
+    this.enabled = true;
+    this.target = new THREE.Vector3();
+    this.minDistance = 0; this.maxDistance = Infinity;
+    this.minPolarAngle = 0; this.maxPolarAngle = Math.PI;
+    this.minAzimuthAngle = -Infinity; this.maxAzimuthAngle = Infinity;
+    this.enableDamping = false; this.dampingFactor = 0.05;
+    this.enableZoom = true; this.zoomSpeed = 1.0;
+    this.enableRotate = true; this.rotateSpeed = 1.0;
+    this.enablePan = true; this.panSpeed = 1.0;
+    this.screenSpacePanning = true;
+    this.autoRotate = false; this.autoRotateSpeed = 2.0;
+
+    var scope = this;
+    var STATE = { NONE:-1, ROTATE:0, DOLLY:1, PAN:2, TOUCH_ROTATE:3, TOUCH_PAN:4, TOUCH_DOLLY_PAN:5 };
+    var state = STATE.NONE;
+    var EPS = 1e-6;
+    var spherical = new THREE.Spherical();
+    var sphericalDelta = new THREE.Spherical();
+    var scale = 1;
+    var panOffset = new THREE.Vector3();
+    var rotateStart = new THREE.Vector2(), rotateEnd = new THREE.Vector2(), rotateDelta = new THREE.Vector2();
+    var panStart = new THREE.Vector2(), panEnd = new THREE.Vector2(), panDelta = new THREE.Vector2();
+    var dollyStart = new THREE.Vector2(), dollyEnd = new THREE.Vector2(), dollyDelta = new THREE.Vector2();
+
+    function getAutoRotationAngle(){ return 2*Math.PI/60/60*scope.autoRotateSpeed; }
+    function getZoomScale(){ return Math.pow(0.95, scope.zoomSpeed); }
+    function rotateLeft(a){ sphericalDelta.theta -= a; }
+    function rotateUp(a){ sphericalDelta.phi -= a; }
+
+    var panLeftV = new THREE.Vector3();
+    function panLeft(dist, m){ panLeftV.setFromMatrixColumn(m,0); panLeftV.multiplyScalar(-dist); panOffset.add(panLeftV); }
+    var panUpV = new THREE.Vector3();
+    function panUp(dist, m){
+      if(scope.screenSpacePanning){ panUpV.setFromMatrixColumn(m,1); }
+      else { panUpV.setFromMatrixColumn(m,0); panUpV.crossVectors(scope.object.up, panUpV); }
+      panUpV.multiplyScalar(dist); panOffset.add(panUpV);
+    }
+    var panOffset2 = new THREE.Vector2();
+    function pan(dx, dy){
+      var el = scope.domElement;
+      if(scope.object.isPerspectiveCamera){
+        var pos = scope.object.position;
+        var tgt = scope.target;
+        var dist2 = pos.distanceTo(tgt);
+        dist2 *= Math.tan((scope.object.fov/2)*Math.PI/180)*2;
+        panLeft(dx*dist2/el.clientHeight, scope.object.matrix);
+        panUp(dy*dist2/el.clientHeight, scope.object.matrix);
+      }
+    }
+    function dollyIn(ds){ scale /= ds; }
+    function dollyOut(ds){ scale *= ds; }
+
+    this.update = function(){
+      var offset = new THREE.Vector3();
+      var quat = new THREE.Quaternion().setFromUnitVectors(object.up, new THREE.Vector3(0,1,0));
+      var quatInverse = quat.clone().invert();
+      var lastPos = new THREE.Vector3();
+      var lastQuat = new THREE.Quaternion();
+      return function update(){
+        var position = scope.object.position;
+        offset.copy(position).sub(scope.target);
+        offset.applyQuaternion(quat);
+        spherical.setFromVector3(offset);
+        if(scope.autoRotate && state === STATE.NONE) rotateLeft(getAutoRotationAngle());
+        if(scope.enableDamping){
+          spherical.theta += sphericalDelta.theta * scope.dampingFactor;
+          spherical.phi   += sphericalDelta.phi   * scope.dampingFactor;
+        } else {
+          spherical.theta += sphericalDelta.theta;
+          spherical.phi   += sphericalDelta.phi;
+        }
+        spherical.theta = Math.max(scope.minAzimuthAngle, Math.min(scope.maxAzimuthAngle, spherical.theta));
+        spherical.phi   = Math.max(scope.minPolarAngle,   Math.min(scope.maxPolarAngle,   spherical.phi));
+        spherical.makeSafe();
+        spherical.radius *= scale;
+        spherical.radius = Math.max(scope.minDistance, Math.min(scope.maxDistance, spherical.radius));
+        scope.target.addScaledVector(panOffset, scope.enableDamping ? scope.dampingFactor : 1);
+        offset.setFromSpherical(spherical);
+        offset.applyQuaternion(quatInverse);
+        position.copy(scope.target).add(offset);
+        scope.object.lookAt(scope.target);
+        if(scope.enableDamping){ sphericalDelta.theta *= (1-scope.dampingFactor); sphericalDelta.phi *= (1-scope.dampingFactor); panOffset.multiplyScalar(1-scope.dampingFactor); }
+        else { sphericalDelta.set(0,0,0); panOffset.set(0,0,0); }
+        scale = 1;
+        if(lastPos.distanceToSquared(scope.object.position) > EPS || 8*(1-lastQuat.dot(scope.object.quaternion)) > EPS){ lastPos.copy(scope.object.position); lastQuat.copy(scope.object.quaternion); return true; }
+        return false;
+      };
+    }();
+
+    this.dispose = function(){
+      scope.domElement.removeEventListener('contextmenu', onContextMenu);
+      scope.domElement.removeEventListener('mousedown', onMouseDown);
+      scope.domElement.removeEventListener('wheel', onMouseWheel);
+      scope.domElement.removeEventListener('touchstart', onTouchStart);
+      scope.domElement.removeEventListener('touchend', onTouchEnd);
+      scope.domElement.removeEventListener('touchmove', onTouchMove);
+      document.removeEventListener('mousemove', onMouseMove);
+      document.removeEventListener('mouseup', onMouseUp);
+    };
+
+    function onMouseDown(e){
+      if(!scope.enabled) return;
+      e.preventDefault();
+      if(e.button===0){ if(!scope.enableRotate) return; rotateStart.set(e.clientX,e.clientY); state=STATE.ROTATE; }
+      else if(e.button===1){ if(!scope.enableZoom) return; dollyStart.set(e.clientX,e.clientY); state=STATE.DOLLY; }
+      else if(e.button===2){ if(!scope.enablePan) return; panStart.set(e.clientX,e.clientY); state=STATE.PAN; }
+      if(state!==STATE.NONE){ document.addEventListener('mousemove',onMouseMove); document.addEventListener('mouseup',onMouseUp); }
+    }
+    function onMouseMove(e){
+      if(!scope.enabled) return;
+      e.preventDefault();
+      if(state===STATE.ROTATE){
+        rotateEnd.set(e.clientX,e.clientY); rotateDelta.subVectors(rotateEnd,rotateStart).multiplyScalar(scope.rotateSpeed);
+        var el = scope.domElement;
+        rotateLeft(2*Math.PI*rotateDelta.x/el.clientHeight);
+        rotateUp(2*Math.PI*rotateDelta.y/el.clientHeight);
+        rotateStart.copy(rotateEnd); scope.update();
+      } else if(state===STATE.DOLLY){
+        dollyEnd.set(e.clientX,e.clientY); dollyDelta.subVectors(dollyEnd,dollyStart);
+        if(dollyDelta.y>0) dollyIn(getZoomScale()); else if(dollyDelta.y<0) dollyOut(getZoomScale());
+        dollyStart.copy(dollyEnd); scope.update();
+      } else if(state===STATE.PAN){
+        panEnd.set(e.clientX,e.clientY); panDelta.subVectors(panEnd,panStart).multiplyScalar(scope.panSpeed);
+        pan(panDelta.x, panDelta.y); panStart.copy(panEnd); scope.update();
+      }
+    }
+    function onMouseUp(){ document.removeEventListener('mousemove',onMouseMove); document.removeEventListener('mouseup',onMouseUp); state=STATE.NONE; }
+    function onMouseWheel(e){
+      if(!scope.enabled||!scope.enableZoom) return;
+      e.preventDefault(); e.stopPropagation();
+      if(e.deltaY<0) dollyOut(getZoomScale()); else if(e.deltaY>0) dollyIn(getZoomScale());
+      scope.update();
+    }
+    function onTouchStart(e){
+      if(!scope.enabled) return;
+      e.preventDefault();
+      switch(e.touches.length){
+        case 1: if(!scope.enableRotate) return; rotateStart.set(e.touches[0].pageX,e.touches[0].pageY); state=STATE.TOUCH_ROTATE; break;
+        case 2: if(!scope.enableZoom&&!scope.enablePan) return;
+          var dx=e.touches[0].pageX-e.touches[1].pageX, dy=e.touches[0].pageY-e.touches[1].pageY;
+          dollyStart.set(0,Math.sqrt(dx*dx+dy*dy)); state=STATE.TOUCH_DOLLY_PAN; break;
+      }
+    }
+    function onTouchMove(e){
+      if(!scope.enabled) return; e.preventDefault(); e.stopPropagation();
+      switch(e.touches.length){
+        case 1: if(!scope.enableRotate||state!==STATE.TOUCH_ROTATE) return;
+          rotateEnd.set(e.touches[0].pageX,e.touches[0].pageY); rotateDelta.subVectors(rotateEnd,rotateStart).multiplyScalar(scope.rotateSpeed);
+          var el=scope.domElement; rotateLeft(2*Math.PI*rotateDelta.x/el.clientHeight); rotateUp(2*Math.PI*rotateDelta.y/el.clientHeight);
+          rotateStart.copy(rotateEnd); scope.update(); break;
+        case 2:
+          if(state!==STATE.TOUCH_DOLLY_PAN) return;
+          var dx2=e.touches[0].pageX-e.touches[1].pageX, dy2=e.touches[0].pageY-e.touches[1].pageY;
+          dollyEnd.set(0,Math.sqrt(dx2*dx2+dy2*dy2)); dollyDelta.set(0,Math.pow(dollyEnd.y/dollyStart.y,scope.zoomSpeed));
+          dollyIn(dollyDelta.y); dollyStart.copy(dollyEnd);
+          panEnd.set((e.touches[0].pageX+e.touches[1].pageX)/2,(e.touches[0].pageY+e.touches[1].pageY)/2);
+          panDelta.subVectors(panEnd,panStart).multiplyScalar(scope.panSpeed);
+          pan(panDelta.x,panDelta.y); panStart.copy(panEnd); scope.update(); break;
+      }
+    }
+    function onTouchEnd(){ state=STATE.NONE; }
+    function onContextMenu(e){ if(!scope.enabled) return; e.preventDefault(); }
+    scope.domElement.addEventListener('contextmenu', onContextMenu);
+    scope.domElement.addEventListener('mousedown', onMouseDown);
+    scope.domElement.addEventListener('wheel', onMouseWheel, {passive:false});
+    scope.domElement.addEventListener('touchstart', onTouchStart, {passive:false});
+    scope.domElement.addEventListener('touchend', onTouchEnd);
+    scope.domElement.addEventListener('touchmove', onTouchMove, {passive:false});
+    this.update();
+  };
+})();
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Scene setup
+// ─────────────────────────────────────────────────────────────────────────────
+const container = document.getElementById('canvas-container');
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.setClearColor(0x080e14);
+container.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.fog = new THREE.FogExp2(0x080e14, 0.004);
+
+const camera = new THREE.PerspectiveCamera(55, window.innerWidth / window.innerHeight, 0.1, 5000);
+camera.up.set(0, 0, 1);   // Z-up
+camera.position.set(0, -120, 80);
+
+const controls = new THREE.OrbitControls(camera, renderer.domElement);
+controls.target.set(0, 0, 0);
+controls.enableDamping = true;
+controls.dampingFactor = 0.08;
+controls.screenSpacePanning = false;
+controls.minDistance = 5;
+controls.maxDistance = 2000;
+controls.update();
+
+// Ambient + directional
+scene.add(new THREE.AmbientLight(0x0a1e2e, 2.5));
+const dirLight = new THREE.DirectionalLight(0x4ae0c8, 0.6);
+dirLight.position.set(100, 100, 200);
+scene.add(dirLight);
+
+// Grid
+const gridHelper = new THREE.GridHelper(400, 40, 0x0e2a38, 0x0a1e28);
+gridHelper.rotation.x = Math.PI / 2;
+scene.add(gridHelper);
+
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Depth colour helper  (shallow=sandy tan  →  deep=dark navy)
+// ─────────────────────────────────────────────────────────────────────────────
+const _cShallow = new THREE.Color(0xc8a87a);  // sandy tan
+const _cMid     = new THREE.Color(0x1e6080);  // teal mid
+const _cDeep    = new THREE.Color(0x091828);  // dark navy
+
+function depthColour(depth, maxDepth) {
+  const t = Math.min(1, Math.max(0, depth / (maxDepth || 20)));
+  const c = new THREE.Color();
+  if (t < 0.5) {
+    c.lerpColors(_cShallow, _cMid, t * 2);
+  } else {
+    c.lerpColors(_cMid, _cDeep, (t - 0.5) * 2);
+  }
+  return c;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Point cloud
+// ─────────────────────────────────────────────────────────────────────────────
+let pcGeometry  = new THREE.BufferGeometry();
+let pcMaterial  = new THREE.PointsMaterial({
+  size: 1.4, vertexColors: true, sizeAttenuation: true,
+  transparent: true, opacity: 0.92,
+});
+let pointCloud = new THREE.Points(pcGeometry, pcMaterial);
+scene.add(pointCloud);
+
+function updatePointCloud(pc) {
+  const x = pc.x || [], y = pc.y || [], depth = pc.depth || [];
+  const n = x.length;
+  if (n === 0) return;
+
+  const maxD = Math.max(...depth, 1);
+  const pos   = new Float32Array(n * 3);
+  const col   = new Float32Array(n * 3);
+
+  for (let i = 0; i < n; i++) {
+    pos[i*3]   = x[i];
+    pos[i*3+1] = y[i];
+    pos[i*3+2] = -depth[i];   // Z-up: depth is negative Z
+
+    const c = depthColour(depth[i], maxD);
+    col[i*3]   = c.r;
+    col[i*3+1] = c.g;
+    col[i*3+2] = c.b;
+  }
+
+  pcGeometry.dispose();
+  pcGeometry = new THREE.BufferGeometry();
+  pcGeometry.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  pcGeometry.setAttribute('color',    new THREE.BufferAttribute(col, 3));
+  pointCloud.geometry = pcGeometry;
+
+  document.getElementById('hud-points').textContent = n;
+  if (depth.length) {
+    const mean = depth.reduce((a,b) => a+b, 0) / depth.length;
+    document.getElementById('hud-depth').textContent = mean.toFixed(1);
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Scanned seafloor mesh (from map_update.mesh — live Delaunay)
+// ─────────────────────────────────────────────────────────────────────────────
+let scanMesh = null;
+
+function updateScanMesh(meshData) {
+  if (!meshData || !meshData.vertices || !meshData.faces) return;
+  if (scanMesh) { scene.remove(scanMesh); scanMesh.geometry.dispose(); }
+
+  const verts  = meshData.vertices;
+  const faces  = meshData.faces;
+  const depths = meshData.depth || [];
+
+  const maxD = depths.length ? Math.max(...depths, 1) : 20;
+
+  const geo  = new THREE.BufferGeometry();
+  const pos  = new Float32Array(verts.length * 3);
+  const col  = new Float32Array(verts.length * 3);
+
+  for (let i = 0; i < verts.length; i++) {
+    pos[i*3]   = verts[i][0];
+    pos[i*3+1] = verts[i][1];
+    pos[i*3+2] = verts[i][2];   // already -depth from server
+    const d = depths[i] || 0;
+    const c = depthColour(d, maxD);
+    col[i*3]   = c.r; col[i*3+1] = c.g; col[i*3+2] = c.b;
+  }
+
+  const idx = new Uint32Array(faces.length * 3);
+  for (let i = 0; i < faces.length; i++) {
+    idx[i*3] = faces[i][0]; idx[i*3+1] = faces[i][1]; idx[i*3+2] = faces[i][2];
+  }
+
+  geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  geo.setAttribute('color',    new THREE.BufferAttribute(col, 3));
+  geo.setIndex(new THREE.BufferAttribute(idx, 1));
+  geo.computeVertexNormals();
+
+  scanMesh = new THREE.Mesh(geo, new THREE.MeshPhongMaterial({
+    vertexColors: true, transparent: true, opacity: 0.55,
+    side: THREE.DoubleSide, depthWrite: false,
+  }));
+  scene.add(scanMesh);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Boat marker
+// ─────────────────────────────────────────────────────────────────────────────
+const boatGroup = new THREE.Group();
+scene.add(boatGroup);
+
+// Cone pointing forward
+const boatCone = new THREE.Mesh(
+  new THREE.ConeGeometry(3, 8, 8),
+  new THREE.MeshPhongMaterial({ color: 0x4ae0c8, emissive: 0x1a6060 })
+);
+boatCone.rotation.x = Math.PI / 2;
+boatGroup.add(boatCone);
+
+// Heading ring
+const ringGeo = new THREE.RingGeometry(4, 5, 32);
+const ringMat = new THREE.MeshBasicMaterial({ color: 0x4ae0c8, side: THREE.DoubleSide, transparent: true, opacity: 0.4 });
+const boatRing = new THREE.Mesh(ringGeo, ringMat);
+boatGroup.add(boatRing);
+
+function updateBoat(boat) {
+  if (!boat || boat.east === undefined) return;
+  boatGroup.position.set(boat.east, boat.north, 0);
+  // heading: 0° = north (+Y), positive = clockwise; Z-up scene
+  const hdgRad = (boat.heading || 0) * Math.PI / 180;
+  boatGroup.rotation.z = -hdgRad;
+
+  document.getElementById('hud-heading').textContent =
+    boat.heading !== undefined ? Math.round(boat.heading) : '—';
+  document.getElementById('hud-speed').textContent =
+    boat.speed_kts !== undefined ? boat.speed_kts.toFixed(1) : '—';
+
+  updateCompass(boat.heading || 0);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Ground truth — floor mesh (built client-side from floor_grid)
+// ─────────────────────────────────────────────────────────────────────────────
+let gtFloorGroup = null;
+let showFloor    = true;
+
+function buildGroundTruthFloor(floor_grid) {
+  if (gtFloorGroup) { scene.remove(gtFloorGroup); }
+  gtFloorGroup = new THREE.Group();
+
+  const { origin_east_m, origin_north_m, cell_size_m, rows, cols, depth_m } = floor_grid;
+
+  // Collect valid vertices
+  const positions = [];
+  const colours   = [];
+  const indices   = [];
+  const vtxIndex  = Array.from({length: rows}, () => new Array(cols).fill(-1));
+
+  let maxD = 0;
+  for (let r = 0; r < rows; r++)
+    for (let c = 0; c < cols; c++)
+      if (depth_m[r][c] !== null && depth_m[r][c] > maxD) maxD = depth_m[r][c];
+  if (maxD === 0) maxD = 20;
+
+  let vi = 0;
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      const d = depth_m[r][c];
+      if (d === null) { continue; }
+      vtxIndex[r][c] = vi++;
+      const ex = origin_east_m  + c * cell_size_m;
+      const ny = origin_north_m + r * cell_size_m;
+      positions.push(ex, ny, -d);
+      const col = depthColour(d, maxD);
+      colours.push(col.r, col.g, col.b);
+    }
+  }
+
+  // Build quads as two triangles
+  for (let r = 0; r < rows - 1; r++) {
+    for (let c = 0; c < cols - 1; c++) {
+      const a = vtxIndex[r][c];
+      const b = vtxIndex[r][c+1];
+      const d = vtxIndex[r+1][c];
+      const e = vtxIndex[r+1][c+1];
+      if (a < 0 || b < 0 || d < 0 || e < 0) continue;
+      indices.push(a, b, d,  b, e, d);
+    }
+  }
+
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(positions), 3));
+  geo.setAttribute('color',    new THREE.BufferAttribute(new Float32Array(colours),   3));
+  geo.setIndex(indices);
+  geo.computeVertexNormals();
+
+  // Solid surface
+  const solid = new THREE.Mesh(geo, new THREE.MeshPhongMaterial({
+    vertexColors: true, transparent: true, opacity: 0.45,
+    side: THREE.DoubleSide, depthWrite: false,
+  }));
+  gtFloorGroup.add(solid);
+
+  // Wireframe overlay
+  const wireGeo = new THREE.WireframeGeometry(geo);
+  const wire = new THREE.LineSegments(wireGeo,
+    new THREE.LineBasicMaterial({ color: 0x1e4a5c, transparent: true, opacity: 0.18 }));
+  gtFloorGroup.add(wire);
+
+  scene.add(gtFloorGroup);
+  gtFloorGroup.visible = showFloor;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Ground truth — fish school markers
+// ─────────────────────────────────────────────────────────────────────────────
+let fishGroup    = null;
+let showFish     = true;
+
+function buildFishMarkers(fish_schools) {
+  if (fishGroup) { scene.remove(fishGroup); }
+  fishGroup = new THREE.Group();
+
+  for (const school of fish_schools) {
+    const r = (school.radius_m || 8) * 0.6;
+    const h = (school.radius_m || 8) * 1.2;
+    const geo = new THREE.CylinderGeometry(r, r, h, 16, 1, true);
+    const mat = new THREE.MeshPhongMaterial({
+      color: 0xffe066, emissive: 0x604a00,
+      transparent: true, opacity: 0.32,
+      side: THREE.DoubleSide, depthWrite: false,
+    });
+    const mesh = new THREE.Mesh(geo, mat);
+    // CylinderGeometry is Y-up; rotate to Z-up
+    mesh.rotation.x = Math.PI / 2;
+    mesh.position.set(
+      school.east_m  || 0,
+      school.north_m || 0,
+      -(school.depth_m || 5)
+    );
+    fishGroup.add(mesh);
+
+    // Label sprite: tiny yellow dot on top
+    const dot = new THREE.Mesh(
+      new THREE.SphereGeometry(1.4, 8, 8),
+      new THREE.MeshBasicMaterial({ color: 0xffe066 })
+    );
+    dot.position.set(school.east_m || 0, school.north_m || 0, -(school.depth_m || 5) + h/2 + 1.5);
+    fishGroup.add(dot);
+  }
+
+  scene.add(fishGroup);
+  fishGroup.visible = showFish;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Compass rose
+// ─────────────────────────────────────────────────────────────────────────────
+const compassCanvas = document.getElementById('compass');
+const compassCtx    = compassCanvas.getContext('2d');
+
+function updateCompass(headingDeg) {
+  const ctx = compassCtx;
+  const w = compassCanvas.width, h = compassCanvas.height, cx = w/2, cy = h/2, r = w/2 - 4;
+  ctx.clearRect(0, 0, w, h);
+
+  // Outer ring
+  ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI*2);
+  ctx.strokeStyle = '#1e4a5c'; ctx.lineWidth = 1.5; ctx.stroke();
+  ctx.fillStyle   = 'rgba(8,22,32,0.7)'; ctx.fill();
+
+  // Cardinal labels (fixed)
+  const labels = [['N',0],['E',90],['S',180],['W',270]];
+  ctx.font = '9px Courier New'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  for (const [lbl, deg] of labels) {
+    const a = (deg - 90) * Math.PI/180;
+    const lx = cx + Math.cos(a) * (r - 9);
+    const ly = cy + Math.sin(a) * (r - 9);
+    ctx.fillStyle = lbl === 'N' ? '#4ae0c8' : '#4a7a8a';
+    ctx.fillText(lbl, lx, ly);
+  }
+
+  // Heading needle
+  const needleA = (headingDeg - 90) * Math.PI / 180;
+  ctx.save();
+  ctx.translate(cx, cy);
+  ctx.rotate(needleA);
+  ctx.beginPath();
+  ctx.moveTo(0, -r+12); ctx.lineTo(3, 4); ctx.lineTo(-3, 4);
+  ctx.closePath();
+  ctx.fillStyle = '#4ae0c8'; ctx.fill();
+  ctx.restore();
+
+  // Centre dot
+  ctx.beginPath(); ctx.arc(cx, cy, 3, 0, Math.PI*2);
+  ctx.fillStyle = '#4ae0c8'; ctx.fill();
+}
+
+updateCompass(0);
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  WebSocket
+// ─────────────────────────────────────────────────────────────────────────────
+const statusEl = document.getElementById('status');
+let ws = null;
+let isReplayMode = false;
+
+function fmtTime(s) {
+  s = Math.floor(s || 0);
+  const m = Math.floor(s / 60), sec = s % 60;
+  return `${m}:${String(sec).padStart(2,'0')}`;
+}
+
+function connect() {
+  statusEl.className = 'warn';
+  statusEl.textContent = 'CONNECTING…';
+
+  ws = new WebSocket(`ws://${location.host}/ws/state`);
+
+  ws.onopen = () => {
+    statusEl.className = 'ok';
+    statusEl.textContent = 'LIVE';
+  };
+
+  ws.onclose = () => {
+    statusEl.className = 'err';
+    statusEl.textContent = 'DISCONNECTED';
+    setTimeout(connect, 2000);
+  };
+
+  ws.onerror = () => {
+    statusEl.className = 'err';
+    statusEl.textContent = 'ERROR';
+  };
+
+  ws.onmessage = (ev) => {
+    let msg;
+    try { msg = JSON.parse(ev.data); } catch { return; }
+
+    switch (msg.type) {
+
+      case 'session_info':
+        isReplayMode = msg.duration_s != null;
+        document.getElementById('replay-panel').style.display =
+          isReplayMode ? 'flex' : 'none';
+        if (isReplayMode) {
+          const slider = document.getElementById('replay-slider');
+          slider.max = 1000;
+          document.getElementById('replay-time').textContent =
+            `0:00 / ${fmtTime(msg.duration_s)}`;
+        }
+        statusEl.textContent = isReplayMode ? 'REPLAY' : 'LIVE';
+        break;
+
+      case 'ground_truth': {
+        const { fish_schools, floor_grid } = msg.data;
+        if (floor_grid)   buildGroundTruthFloor(floor_grid);
+        if (fish_schools && fish_schools.length) buildFishMarkers(fish_schools);
+        document.getElementById('gt-panel').style.display = 'flex';
+        break;
+      }
+
+      case 'map_update':
+        if (msg.pointcloud) updatePointCloud(msg.pointcloud);
+        if (msg.boat)       updateBoat(msg.boat);
+        if (msg.mesh)       updateScanMesh(msg.mesh);
+
+        // Replay controls
+        if (msg.replay) {
+          const rp = msg.replay;
+          const slider = document.getElementById('replay-slider');
+          if (!sliderDragging) {
+            slider.value = Math.round((rp.fraction || 0) * 1000);
+          }
+          document.getElementById('replay-time').textContent =
+            `${fmtTime(rp.position_s)} / ${fmtTime(rp.duration_s)}`;
+          document.getElementById('btn-pause-play').textContent =
+            rp.paused ? '▶ PLAY' : '⏸ PAUSE';
+          document.getElementById('btn-pause-play').classList.toggle('active', !rp.paused);
+        }
+        break;
+    }
+  };
+}
+
+connect();
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Replay controls
+// ─────────────────────────────────────────────────────────────────────────────
+let sliderDragging = false;
+
+function send(obj) {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify(obj));
+  }
+}
+
+const slider = document.getElementById('replay-slider');
+slider.addEventListener('mousedown', () => { sliderDragging = true; });
+slider.addEventListener('mouseup',   () => {
+  sliderDragging = false;
+  send({ type: 'seek', fraction: parseInt(slider.value) / 1000 });
+});
+slider.addEventListener('touchend',  () => {
+  sliderDragging = false;
+  send({ type: 'seek', fraction: parseInt(slider.value) / 1000 });
+});
+
+document.getElementById('btn-pause-play').addEventListener('click', () => {
+  const btn = document.getElementById('btn-pause-play');
+  if (btn.textContent.includes('PLAY')) {
+    send({ type: 'play' });
+  } else {
+    send({ type: 'pause' });
+  }
+});
+
+document.getElementById('speed-select').addEventListener('change', (e) => {
+  send({ type: 'speed', value: parseFloat(e.target.value) });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Ground truth toggles
+// ─────────────────────────────────────────────────────────────────────────────
+document.getElementById('btn-fish').addEventListener('click', () => {
+  showFish = !showFish;
+  if (fishGroup) fishGroup.visible = showFish;
+  document.getElementById('btn-fish').classList.toggle('active', showFish);
+  document.getElementById('btn-fish').textContent = showFish ? 'Show Fish' : 'Hide Fish';
+});
+
+document.getElementById('btn-floor').addEventListener('click', () => {
+  showFloor = !showFloor;
+  if (gtFloorGroup) gtFloorGroup.visible = showFloor;
+  document.getElementById('btn-floor').classList.toggle('active', showFloor);
+  document.getElementById('btn-floor').textContent = showFloor ? 'Show Floor' : 'Hide Floor';
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Render loop
+// ─────────────────────────────────────────────────────────────────────────────
+function animate() {
+  requestAnimationFrame(animate);
+  controls.update();
+  renderer.render(scene, camera);
+}
+animate();
+</script>
+</body>
+</html>
