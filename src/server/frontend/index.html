@@ -639,8 +639,9 @@ function updatePointCloud(pc) {
 
     let c;
     if (isFloor[i] === false) {
-      // Fish echo — orange
-      c = { r: 1.0, g: 0.55, b: 0.05 };
+      // Fish echo — orange, dimmed by decayed confidence
+      const cv = Math.min(1, Math.max(0, (conf[i] || 0) / 0.65));
+      c = { r: 1.0 * cv, g: 0.55 * cv, b: 0.05 * cv };
     } else if ((conf[i] || 0) <= 0.45) {
       // Forward-scan floor return — muted cyan to distinguish from primary returns
       const base = depthColour(depth[i], maxD);
@@ -874,9 +875,14 @@ function _makeFishTexture() {
 
 const _fishTex = _makeFishTexture();
 
+let _fishSpheres = [];
+let _fishSprites = [];
+
 function buildFishMarkers(fish_schools) {
   if (fishGroup) { scene.remove(fishGroup); }
-  fishGroup = new THREE.Group();
+  fishGroup   = new THREE.Group();
+  _fishSpheres = [];
+  _fishSprites = [];
 
   for (const school of fish_schools) {
     const r  = school.radius_m || 8;
@@ -884,7 +890,6 @@ function buildFishMarkers(fish_schools) {
     const ny = school.north_m  || 0;
     const ez = -(school.depth_m || 5);
 
-    // Semi-transparent sphere showing school volume
     const sphere = new THREE.Mesh(
       new THREE.SphereGeometry(r, 24, 16),
       new THREE.MeshPhongMaterial({
@@ -895,18 +900,35 @@ function buildFishMarkers(fish_schools) {
     );
     sphere.position.set(ex, ny, ez);
     fishGroup.add(sphere);
+    _fishSpheres.push(sphere);
 
-    // Fish sprite — fixed world size, hovering just above the sphere
     const sprite = new THREE.Sprite(new THREE.SpriteMaterial({
       map: _fishTex, transparent: true, opacity: 0.95, depthWrite: false,
     }));
     sprite.scale.set(8, 4.6, 1);
     sprite.position.set(ex, ny, ez + r + 3);
     fishGroup.add(sprite);
+    _fishSprites.push(sprite);
   }
 
   scene.add(fishGroup);
   fishGroup.visible = showFish;
+}
+
+function updateFishPositions(positions) {
+  if (!fishGroup || positions.length !== _fishSprites.length) {
+    buildFishMarkers(positions);
+    return;
+  }
+  for (let i = 0; i < positions.length; i++) {
+    const p  = positions[i];
+    const ex = p.east_m  || 0;
+    const ny = p.north_m || 0;
+    const ez = -(p.depth_m || 5);
+    const r  = p.radius_m || 8;
+    _fishSpheres[i].position.set(ex, ny, ez);
+    _fishSprites[i].position.set(ex, ny, ez + r + 3);
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1017,11 +1039,12 @@ function connect() {
       }
 
       case 'map_update':
-        if (msg.pointcloud) updatePointCloud(msg.pointcloud);
-        if (msg.boat)       updateBoat(msg.boat);
-        if (msg.mesh)       updateScanMesh(msg.mesh);
+        if (msg.pointcloud)    updatePointCloud(msg.pointcloud);
+        if (msg.boat)          updateBoat(msg.boat);
+        if (msg.mesh)          updateScanMesh(msg.mesh);
+        if (msg.fish_positions) updateFishPositions(msg.fish_positions);
         ffHandleUpdate(msg);
-        if (msg.forward_scan) ffDrawForward(msg.forward_scan);
+        if (msg.forward_scan)  ffDrawForward(msg.forward_scan);
 
         // Replay controls
         if (msg.replay) {

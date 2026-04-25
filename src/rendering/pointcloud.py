@@ -20,9 +20,7 @@ def build_pointcloud_payload(state: "WorldState",
         view = state.state_at(current_ts)
     else:
         view = state
-    # Include all observations; is_floor array lets the frontend
-    # colour floor vs fish returns differently.
-    return view.to_pointcloud(floor_only=False)
+    return view.to_pointcloud(floor_only=False, current_ts=current_ts)
 
 
 def extract_boat(state: "WorldState") -> dict:

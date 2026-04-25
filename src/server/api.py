@@ -29,6 +29,7 @@ REST:
 import asyncio
 import base64
 import json
+import math
 import time
 from pathlib import Path
 from typing import Optional
@@ -102,6 +103,18 @@ def _build_update(current_ts: Optional[float] = None) -> dict:
     echo = _world_state.echo_at(ts) if ts is not None else None
     if echo:
         payload["echo"] = base64.b64encode(echo).decode("ascii")
+
+    if _ground_truth is not None and ts is not None:
+        payload["fish_positions"] = [
+            {
+                "east_m":   round(s["east_m"]  + s.get("amp_e", 0) * math.sin(s.get("freq", 0) * ts + s.get("phase", 0)), 2),
+                "north_m":  round(s["north_m"] + s.get("amp_n", 0) * math.cos(s.get("freq", 0) * ts + s.get("phase", 0) + 0.5), 2),
+                "depth_m":  s["depth_m"],
+                "radius_m": s["radius_m"],
+                "species":  s.get("species", ""),
+            }
+            for s in _ground_truth.fish_schools
+        ]
 
     fwd = _world_state.forward_scan_at(ts) if ts is not None else None
     if fwd:

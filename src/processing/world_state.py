@@ -98,10 +98,18 @@ class WorldState:
 
     # ── export ────────────────────────────────────────────────────────────────
 
-    def to_pointcloud(self, floor_only: bool = False) -> dict:
+    # Fish observations decay exponentially — half-life of 12 seconds so that
+    # a school that has moved away fades within ~40s.
+    _FISH_DECAY_RATE = 0.0578   # ln(2) / 12
+    _FISH_MIN_CONF   = 0.02     # cull below this after decay
+
+    def to_pointcloud(self, floor_only: bool = False,
+                      current_ts: Optional[float] = None) -> dict:
         """
         Export as a dict of lists suitable for JSON serialisation.
         floor_only=True: exclude mid-water fish echo returns (is_floor==0).
+        current_ts: when given, apply exponential confidence decay to fish
+                    observations and cull those below _FISH_MIN_CONF.
         """
         empty = {"x": [], "y": [], "depth": [], "confidence": [],
                  "ts": [], "heading": [], "speed_kts": [], "is_floor": []}
@@ -112,11 +120,24 @@ class WorldState:
             d = d[d[:, _IS_FLOOR] > 0.5]
         if len(d) == 0:
             return empty
+
+        conf = d[:, _CONF].copy()
+        if current_ts is not None:
+            is_fish = d[:, _IS_FLOOR] < 0.5
+            if is_fish.any():
+                ages  = np.maximum(0.0, current_ts - d[:, _TS])
+                decay = np.where(is_fish,
+                                 np.exp(-self._FISH_DECAY_RATE * ages), 1.0)
+                conf *= decay
+                keep = (~is_fish) | (conf >= self._FISH_MIN_CONF)
+                d    = d[keep]
+                conf = conf[keep]
+
         return {
             "x":          d[:, _EAST].tolist(),
             "y":          d[:, _NORTH].tolist(),
             "depth":      d[:, _DEPTH].tolist(),
-            "confidence": d[:, _CONF].tolist(),
+            "confidence": conf.tolist(),
             "ts":         d[:, _TS].tolist(),
             "heading":    d[:, _HDG].tolist(),
             "speed_kts":  d[:, _SPD].tolist(),

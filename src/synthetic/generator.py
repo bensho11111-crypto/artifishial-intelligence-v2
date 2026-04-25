@@ -42,6 +42,20 @@ class FishSchool:
     radius_m: float
     density:  float
     species:  str
+    # Sinusoidal movement: position oscillates around the centre
+    amp_e:  float = 0.0   # east amplitude (m)
+    amp_n:  float = 0.0   # north amplitude (m)
+    freq:   float = 0.0   # angular frequency (rad/s)
+    phase:  float = 0.0   # phase offset (rad)
+
+    def at(self, t: float) -> "FishSchool":
+        """Return a copy of this school at time t (seconds from session start)."""
+        from dataclasses import replace
+        return replace(
+            self,
+            east_m  = self.east_m  + self.amp_e * math.sin(self.freq * t + self.phase),
+            north_m = self.north_m + self.amp_n * math.cos(self.freq * t + self.phase + 0.5),
+        )
 
 
 SPECIES_TS = {"bass": 0.85, "trout": 0.70, "carp": 0.60, "bream": 0.50}
@@ -69,10 +83,14 @@ def _make_schools(route_enu: List[Tuple[float,float]],
     cy  = sum(p[1] for p in route_enu[mid-5:mid+5])/10
 
     return [
-        FishSchool(p60[0], p60[1], floor.depth_at(*p60)*0.55, 8.0, 0.9, "bass"),
-        FishSchool(p30[0], p30[1], floor.depth_at(*p30)*0.60, 6.0, 0.8, "trout"),
-        FishSchool(cx-10, cy-8,    6.5,                       10.0, 0.55, "carp"),
-        FishSchool(p5[0], p5[1],   floor.depth_at(*p5)*0.65,  5.0, 0.8, "bream"),
+        FishSchool(p60[0], p60[1], floor.depth_at(*p60)*0.55, 8.0, 0.9, "bass",
+                   amp_e=10.0, amp_n=8.0,  freq=0.048, phase=0.0),
+        FishSchool(p30[0], p30[1], floor.depth_at(*p30)*0.60, 6.0, 0.8, "trout",
+                   amp_e=12.0, amp_n=10.0, freq=0.071, phase=1.1),
+        FishSchool(cx-10, cy-8,    6.5,                       10.0, 0.55, "carp",
+                   amp_e=6.0,  amp_n=5.0,  freq=0.031, phase=2.3),
+        FishSchool(p5[0], p5[1],   floor.depth_at(*p5)*0.65,  5.0, 0.8, "bream",
+                   amp_e=8.0,  amp_n=9.0,  freq=0.059, phase=3.7),
     ]
 
 
@@ -169,6 +187,10 @@ class GeneratedSession:
                     "radius_m": s.radius_m,
                     "density":  s.density,
                     "species":  SPECIES_NAMES.get(s.species, s.species),
+                    "amp_e":    s.amp_e,
+                    "amp_n":    s.amp_n,
+                    "freq":     s.freq,
+                    "phase":    s.phase,
                 }
                 for s in self.fish_schools
             ],
@@ -238,15 +260,18 @@ def generate(duration_s: float = 120.0,
                 be, bn = route_enu[idx]
             else:
                 be, bn = 0.0, 0.0
+            # Compute school positions at this tick's time
+            t_rel = tick.ts - session_start_ts
+            schools_now = [s.at(t_rel) for s in schools]
             # Forward scan only on GPS ticks (heading available)
             fwd = None
             if tick.gps is not None:
                 fwd_rng = random.Random(seed ^ int(tick.ts * 1000) & 0xFFFFFF)
-                fwd = _gen_fwd(be, bn, tick.gps.heading_deg, floor, schools, fwd_rng)
+                fwd = _gen_fwd(be, bn, tick.gps.heading_deg, floor, schools_now, fwd_rng)
             new_sonar = SonarTick(
                 ts=sonar.ts, depth_m=sonar.depth_m, temp_c=sonar.temp_c,
                 signal_db=sonar.signal_db,
-                echo=_make_echo(sonar.depth_m, schools, be, bn),
+                echo=_make_echo(sonar.depth_m, schools_now, be, bn),
                 forward_scan=fwd,
             )
             final_ticks.append(Tick(ts=tick.ts, sonar=new_sonar, gps=tick.gps))
