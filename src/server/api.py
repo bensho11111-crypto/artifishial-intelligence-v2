@@ -103,6 +103,10 @@ def _build_update(current_ts: Optional[float] = None) -> dict:
     if echo:
         payload["echo"] = base64.b64encode(echo).decode("ascii")
 
+    fwd = _world_state.forward_scan_at(ts) if ts is not None else None
+    if fwd:
+        payload["forward_scan"] = base64.b64encode(fwd).decode("ascii")
+
     return payload
 
 

@@ -87,6 +87,90 @@ def _parse_echo_returns(echo: bytes, floor_depth_m: float,
     return observations
 
 
+# Constants must match synthetic/forward_scan.py
+_FWD_N_BEAMS    = 60
+_FWD_N_RANGE    = 128
+_FWD_MAX_RANGE_M = 40.0
+_FWD_BEAM_MIN_DEG = 5.0
+_FWD_BEAM_MAX_DEG = 64.0
+_FWD_MIN_DEP_DEG  = 15.0   # ignore beams shallower than this — poor depth accuracy
+_FWD_FLOOR_THRESH = 100    # amplitude threshold for floor return detection
+
+
+def _parse_forward_returns(scan: bytes, east_m: float, north_m: float,
+                           heading_deg: float, ts: float,
+                           speed_kts: float) -> List[Observation]:
+    """
+    Extract floor Observations from a forward-scan frame.
+
+    Each beam that produces a strong return above _FWD_FLOOR_THRESH is treated
+    as a floor hit.  The world position is computed from the beam angle and
+    slant range.  Confidence is scaled by depression angle (steeper = more
+    reliable) and capped well below the downward-sonar primary return.
+    """
+    if not scan or len(scan) < _FWD_N_BEAMS * _FWD_N_RANGE:
+        return []
+
+    hdg_rad  = math.radians(heading_deg)
+    fwd_e    = math.sin(hdg_rad)
+    fwd_n    = math.cos(hdg_rad)
+    step_m   = _FWD_MAX_RANGE_M / _FWD_N_RANGE
+    deg_span = _FWD_BEAM_MAX_DEG - _FWD_BEAM_MIN_DEG
+
+    observations: List[Observation] = []
+
+    for b in range(_FWD_N_BEAMS):
+        theta_deg = _FWD_BEAM_MIN_DEG + b * deg_span / max(_FWD_N_BEAMS - 1, 1)
+        if theta_deg < _FWD_MIN_DEP_DEG:
+            continue
+
+        theta = math.radians(theta_deg)
+        sin_t = math.sin(theta)
+        cos_t = math.cos(theta)
+
+        base = b * _FWD_N_RANGE
+        peak_ri, peak_amp = -1, 0
+        for ri in range(_FWD_N_RANGE):
+            amp = scan[base + ri]
+            if amp >= _FWD_FLOOR_THRESH:
+                # Walk to find blob peak
+                peak_amp = amp
+                peak_ri  = ri
+                j = ri + 1
+                while j < _FWD_N_RANGE and scan[base + j] >= _FWD_FLOOR_THRESH // 2:
+                    if scan[base + j] > peak_amp:
+                        peak_amp = scan[base + j]
+                        peak_ri  = j
+                    j += 1
+                break
+
+        if peak_ri < 0:
+            continue
+
+        r     = (peak_ri + 0.5) * step_m
+        obs_e = east_m  + r * fwd_e * cos_t
+        obs_n = north_m + r * fwd_n * cos_t
+        obs_d = r * sin_t
+
+        # Steeper angle → closer range → better accuracy → higher confidence.
+        # Cap at 0.45 so forward returns never outrank the primary downward return.
+        angle_factor = (theta_deg - _FWD_MIN_DEP_DEG) / (_FWD_BEAM_MAX_DEG - _FWD_MIN_DEP_DEG)
+        conf = round(min(0.45, (peak_amp / 255.0) * 0.45 * angle_factor), 3)
+
+        observations.append(Observation(
+            ts          = ts,
+            east_m      = obs_e,
+            north_m     = obs_n,
+            depth_m     = obs_d,
+            confidence  = conf,
+            heading_deg = heading_deg,
+            speed_kts   = speed_kts,
+            is_floor    = True,
+        ))
+
+    return observations
+
+
 class Fusion:
     """
     4-state Kalman filter: [east, north, ve, vn] in local ENU.
@@ -176,6 +260,7 @@ class Fusion:
             heading_deg=gps.heading_deg,
             speed_kts=gps.speed_kts,
             echo=sonar.echo or None,
+            forward_scan=sonar.forward_scan or None,
         )
 
         # Parse echo array for secondary returns (fish arches)
@@ -184,11 +269,17 @@ class Fusion:
             gps.ts, gps.heading_deg, gps.speed_kts,
         )
 
+        # Extract floor observations from forward-facing scan
+        fwd_obs = _parse_forward_returns(
+            sonar.forward_scan, e, n_pos,
+            gps.heading_deg, gps.ts, gps.speed_kts,
+        ) if sonar.forward_scan else []
+
         print(f"[tick ts={gps.ts:7.2f}]  floor {depth:.2f} m  "
               f"E={e:7.1f} N={n_pos:7.1f}  "
-              f"[BLUE]")
+              f"[BLUE]  fwd={len(fwd_obs)} pts  fish={len(fish)}")
         for f in fish:
-            print(f"               └─ fish echo  depth={f.depth_m:.2f} m  "
+            print(f"               fish echo  depth={f.depth_m:.2f} m  "
                   f"conf={f.confidence:.2f}  [ORANGE]")
 
-        return [bottom] + fish
+        return [bottom] + fish + fwd_obs

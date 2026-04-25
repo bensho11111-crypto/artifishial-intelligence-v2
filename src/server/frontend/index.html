@@ -238,6 +238,29 @@
       image-rendering: pixelated;
     }
 
+    .ff-tabs {
+      display: flex;
+      gap: 4px;
+    }
+
+    .ff-tab {
+      flex: 1;
+      background: rgba(30,74,92,0.4);
+      border: 1px solid #1e4a5c;
+      border-radius: 3px;
+      color: #7ecfe0;
+      cursor: pointer;
+      font-family: inherit;
+      font-size: 10px;
+      letter-spacing: 0.08em;
+      padding: 3px 0;
+      text-align: center;
+      transition: background 0.15s;
+    }
+
+    .ff-tab:hover  { background: rgba(30,74,92,0.9); }
+    .ff-tab.active { border-color: #4ae0c8; color: #4ae0c8; }
+
     /* ── Pick tooltip ────────────────────────────────────────────────────────── */
     #pick-tooltip {
       position: fixed;
@@ -280,10 +303,15 @@
 <!-- Fish finder panel -->
 <div id="ff-panel">
   <div class="ff-title">FISH FINDER</div>
+  <div class="ff-tabs">
+    <button class="ff-tab active" id="ff-tab-down">DOWN</button>
+    <button class="ff-tab"        id="ff-tab-fwd">FORWARD</button>
+  </div>
   <div id="ff-wrap">
     <div id="ff-axis"></div>
     <canvas id="ff-canvas" width="280" height="360"></canvas>
   </div>
+  <canvas id="ff-fwd-canvas" width="280" height="200" style="display:none;image-rendering:pixelated;"></canvas>
 </div>
 
 <!-- Ground truth panel -->
@@ -593,6 +621,7 @@ scene.add(pointCloud);
 function updatePointCloud(pc) {
   const x = pc.x || [], y = pc.y || [], depth = pc.depth || [];
   const isFloor = pc.is_floor || [];   // true = bottom return, false = fish echo
+  const conf    = pc.confidence || [];
   const n = x.length;
   if (n === 0) return;
 
@@ -610,8 +639,12 @@ function updatePointCloud(pc) {
 
     let c;
     if (isFloor[i] === false) {
-      // Fish echo — orange so it's visually distinct from the floor point cloud
+      // Fish echo — orange
       c = { r: 1.0, g: 0.55, b: 0.05 };
+    } else if ((conf[i] || 0) <= 0.45) {
+      // Forward-scan floor return — muted cyan to distinguish from primary returns
+      const base = depthColour(depth[i], maxD);
+      c = { r: base.r * 0.55, g: base.g * 0.85 + 0.15, b: base.b * 0.85 + 0.15 };
     } else {
       c = depthColour(depth[i], maxD);
     }
@@ -988,6 +1021,7 @@ function connect() {
         if (msg.boat)       updateBoat(msg.boat);
         if (msg.mesh)       updateScanMesh(msg.mesh);
         ffHandleUpdate(msg);
+        if (msg.forward_scan) ffDrawForward(msg.forward_scan);
 
         // Replay controls
         if (msg.replay) {
@@ -1286,6 +1320,119 @@ document.getElementById('btn-ff').addEventListener('click', () => {
   ffVisible = !ffVisible;
   ffPanel.style.display = ffVisible ? 'flex' : 'none';
   document.getElementById('btn-ff').classList.toggle('active', ffVisible);
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Forward-facing fish finder
+//  Must mirror constants in src/synthetic/forward_scan.py
+// ─────────────────────────────────────────────────────────────────────────────
+const FF_FWD_N_BEAMS    = 60;
+const FF_FWD_N_RANGE    = 128;
+const FF_FWD_MAX_RANGE  = 40.0;   // metres
+const FF_FWD_MIN_DEG    = 5.0;
+const FF_FWD_MAX_DEG    = 64.0;
+const FF_FWD_MAX_FWD_M  = 35.0;   // canvas x extent (forward metres)
+const FF_FWD_MAX_DEPTH_M = 22.0;  // canvas y extent (depth metres)
+
+const ffFwdCanvas = document.getElementById('ff-fwd-canvas');
+const ffFwdCtx    = ffFwdCanvas.getContext('2d');
+const FF_FWD_W    = ffFwdCanvas.width;
+const FF_FWD_H    = ffFwdCanvas.height;
+
+// Precompute pixel → (beam_idx, range_idx) lookup table
+// Each entry: [beam_idx (int16), range_idx (int16)], -1 = out of range
+const _fwdLUT = new Int16Array(FF_FWD_W * FF_FWD_H * 2).fill(-1);
+(function buildFwdLUT() {
+  for (let py = 0; py < FF_FWD_H; py++) {
+    for (let px = 0; px < FF_FWD_W; px++) {
+      const fwd_m   = (px / FF_FWD_W) * FF_FWD_MAX_FWD_M;
+      const depth_m = (py / FF_FWD_H) * FF_FWD_MAX_DEPTH_M;
+      const range_m = Math.sqrt(fwd_m * fwd_m + depth_m * depth_m);
+      const theta   = Math.atan2(depth_m, fwd_m) * 180 / Math.PI;
+      const b = Math.round((theta - FF_FWD_MIN_DEG) /
+                (FF_FWD_MAX_DEG - FF_FWD_MIN_DEG) * (FF_FWD_N_BEAMS - 1));
+      const r = Math.floor(range_m / FF_FWD_MAX_RANGE * FF_FWD_N_RANGE);
+      const i = (py * FF_FWD_W + px) * 2;
+      if (b >= 0 && b < FF_FWD_N_BEAMS && r >= 0 && r < FF_FWD_N_RANGE) {
+        _fwdLUT[i]   = b;
+        _fwdLUT[i+1] = r;
+      }
+    }
+  }
+})();
+
+// Range and depth grid lines drawn on top of each frame
+function _fwdDrawGrid() {
+  ffFwdCtx.strokeStyle = 'rgba(74,224,200,0.18)';
+  ffFwdCtx.lineWidth = 0.5;
+  ffFwdCtx.font = '8px Courier New';
+  ffFwdCtx.fillStyle = 'rgba(74,224,200,0.55)';
+
+  // Vertical range lines every 10m forward
+  for (let fm = 10; fm < FF_FWD_MAX_FWD_M; fm += 10) {
+    const px = fm / FF_FWD_MAX_FWD_M * FF_FWD_W;
+    ffFwdCtx.beginPath();
+    ffFwdCtx.moveTo(px, 0); ffFwdCtx.lineTo(px, FF_FWD_H);
+    ffFwdCtx.stroke();
+    ffFwdCtx.fillText(fm + 'm', px + 2, 10);
+  }
+  // Horizontal depth lines every 5m
+  for (let dm = 5; dm < FF_FWD_MAX_DEPTH_M; dm += 5) {
+    const py = dm / FF_FWD_MAX_DEPTH_M * FF_FWD_H;
+    ffFwdCtx.beginPath();
+    ffFwdCtx.moveTo(0, py); ffFwdCtx.lineTo(FF_FWD_W, py);
+    ffFwdCtx.stroke();
+    ffFwdCtx.fillText(dm + 'm', 2, py - 2);
+  }
+}
+
+function ffDrawForward(fwdB64) {
+  const bin   = atob(fwdB64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+
+  const img = ffFwdCtx.createImageData(FF_FWD_W, FF_FWD_H);
+  const d   = img.data;
+
+  for (let py = 0; py < FF_FWD_H; py++) {
+    for (let px = 0; px < FF_FWD_W; px++) {
+      const li  = (py * FF_FWD_W + px) * 2;
+      const b   = _fwdLUT[li];
+      const r   = _fwdLUT[li + 1];
+      const pi  = (py * FF_FWD_W + px) * 4;
+      if (b < 0) {
+        d[pi] = d[pi+1] = d[pi+2] = 0; d[pi+3] = 255;
+        continue;
+      }
+      const amp = bytes[b * FF_FWD_N_RANGE + r];
+      d[pi]   = _ffLUT[amp * 3];
+      d[pi+1] = _ffLUT[amp * 3 + 1];
+      d[pi+2] = _ffLUT[amp * 3 + 2];
+      d[pi+3] = 255;
+    }
+  }
+
+  ffFwdCtx.putImageData(img, 0, 0);
+  _fwdDrawGrid();
+}
+
+// Tab switching
+let _ffMode = 'down';   // 'down' | 'fwd'
+
+document.getElementById('ff-tab-down').addEventListener('click', () => {
+  _ffMode = 'down';
+  document.getElementById('ff-tab-down').classList.add('active');
+  document.getElementById('ff-tab-fwd').classList.remove('active');
+  document.getElementById('ff-wrap').style.display = 'flex';
+  ffFwdCanvas.style.display = 'none';
+});
+
+document.getElementById('ff-tab-fwd').addEventListener('click', () => {
+  _ffMode = 'fwd';
+  document.getElementById('ff-tab-fwd').classList.add('active');
+  document.getElementById('ff-tab-down').classList.remove('active');
+  document.getElementById('ff-wrap').style.display = 'none';
+  ffFwdCanvas.style.display = 'block';
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

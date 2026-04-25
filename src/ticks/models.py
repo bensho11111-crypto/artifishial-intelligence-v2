@@ -18,6 +18,7 @@ class SonarTick:
     temp_c: float
     signal_db: float    # 0–100
     echo: bytes         # raw A-scope amplitude array (512 bytes)
+    forward_scan: Optional[bytes] = None  # N_BEAMS*N_RANGE bytes, GPS ticks only
 
 
 @dataclass(frozen=True)
@@ -63,4 +64,5 @@ class Observation:
     heading_deg: float
     speed_kts: float
     is_floor: bool = True    # False for mid-water echo returns (fish arches)
-    echo: Optional[bytes] = None  # raw A-scope bytes, only on floor observations
+    echo: Optional[bytes] = None          # raw A-scope bytes, floor observations only
+    forward_scan: Optional[bytes] = None  # forward-facing frame, floor obs only

@@ -228,11 +228,9 @@ def generate(duration_s: float = 120.0,
 
     # Place fish schools at known route positions, then re-encode echo data
     schools = _make_schools(route_enu, floor)
+    from synthetic.forward_scan import generate as _gen_fwd
     final_ticks: List[Tick] = []
     for i, (tick, step) in enumerate(zip(ticks, range(n_steps))):
-        boat_step_e, boat_step_n = _enu(
-            START_LAT, START_LON)   # approximate — echo only needs rough position
-        # Reuse sonar with real echo
         sonar = tick.sonar
         if sonar is not None:
             idx = i // gps_every
@@ -240,10 +238,16 @@ def generate(duration_s: float = 120.0,
                 be, bn = route_enu[idx]
             else:
                 be, bn = 0.0, 0.0
+            # Forward scan only on GPS ticks (heading available)
+            fwd = None
+            if tick.gps is not None:
+                fwd_rng = random.Random(seed ^ int(tick.ts * 1000) & 0xFFFFFF)
+                fwd = _gen_fwd(be, bn, tick.gps.heading_deg, floor, schools, fwd_rng)
             new_sonar = SonarTick(
                 ts=sonar.ts, depth_m=sonar.depth_m, temp_c=sonar.temp_c,
                 signal_db=sonar.signal_db,
                 echo=_make_echo(sonar.depth_m, schools, be, bn),
+                forward_scan=fwd,
             )
             final_ticks.append(Tick(ts=tick.ts, sonar=new_sonar, gps=tick.gps))
         else:
