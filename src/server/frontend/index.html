@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Artifishial Intelligence v2</title>
+  <title>Artifishial Intelligence v3</title>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -193,6 +193,23 @@
     }
 
     #speed-select:focus { outline: none; border-color: #4ae0c8; }
+
+    /* ── Pick tooltip ────────────────────────────────────────────────────────── */
+    #pick-tooltip {
+      position: fixed;
+      background: rgba(8,22,32,0.92);
+      border: 1px solid #4ae0c8;
+      border-radius: 4px;
+      padding: 6px 10px;
+      font-size: 11px;
+      color: #e0f4ff;
+      pointer-events: none;
+      z-index: 20;
+      display: none;
+      line-height: 1.7;
+      white-space: nowrap;
+    }
+    #pick-tooltip .pick-label { color: #4ae0c8; letter-spacing: 0.08em; }
   </style>
 </head>
 <body>
@@ -201,7 +218,7 @@
 
 <!-- HUD -->
 <div id="hud">
-  <div class="hud-badge hud-title">ARTIFISHIAL INTELLIGENCE v2</div>
+  <div class="hud-badge hud-title">ARTIFISHIAL INTELLIGENCE v3</div>
   <div class="hud-row">
     <div class="hud-badge">POINTS <span id="hud-points">0</span></div>
     <div class="hud-badge">DEPTH <span id="hud-depth">—</span> m</div>
@@ -241,6 +258,9 @@
     </select>
   </div>
 </div>
+
+<!-- Pick tooltip -->
+<div id="pick-tooltip"></div>
 
 <!-- Three.js from CDN -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r134/three.min.js"></script>
@@ -715,39 +735,87 @@ function buildGroundTruthFloor(floor_grid) {
 // ─────────────────────────────────────────────────────────────────────────────
 //  Ground truth — fish school markers
 // ─────────────────────────────────────────────────────────────────────────────
-let fishGroup    = null;
-let showFish     = true;
+let fishGroup = null;
+let showFish  = true;
+
+function _makeFishTexture() {
+  const S = 128;
+  const cv = document.createElement('canvas');
+  cv.width = S; cv.height = S;
+  const ctx = cv.getContext('2d');
+
+  // Body gradient
+  const grd = ctx.createRadialGradient(S*0.36, S*0.50, S*0.04, S*0.36, S*0.50, S*0.34);
+  grd.addColorStop(0, '#fff8b0');
+  grd.addColorStop(1, '#ffe066');
+
+  ctx.beginPath();
+  ctx.ellipse(S*0.36, S*0.50, S*0.28, S*0.19, 0, 0, Math.PI*2);
+  ctx.fillStyle = grd;
+  ctx.fill();
+
+  // Forked tail
+  ctx.beginPath();
+  ctx.moveTo(S*0.62, S*0.50);
+  ctx.lineTo(S*0.90, S*0.26);
+  ctx.lineTo(S*0.76, S*0.50);
+  ctx.lineTo(S*0.90, S*0.74);
+  ctx.closePath();
+  ctx.fillStyle = '#ffe066';
+  ctx.fill();
+
+  // Dorsal fin
+  ctx.beginPath();
+  ctx.moveTo(S*0.26, S*0.32);
+  ctx.quadraticCurveTo(S*0.38, S*0.12, S*0.54, S*0.32);
+  ctx.closePath();
+  ctx.fillStyle = '#ffd030';
+  ctx.fill();
+
+  // Eye (dark with white highlight)
+  ctx.beginPath();
+  ctx.arc(S*0.16, S*0.47, S*0.050, 0, Math.PI*2);
+  ctx.fillStyle = '#1a1000';
+  ctx.fill();
+  ctx.beginPath();
+  ctx.arc(S*0.15, S*0.45, S*0.018, 0, Math.PI*2);
+  ctx.fillStyle = '#ffffff';
+  ctx.fill();
+
+  return new THREE.CanvasTexture(cv);
+}
+
+const _fishTex = _makeFishTexture();
 
 function buildFishMarkers(fish_schools) {
   if (fishGroup) { scene.remove(fishGroup); }
   fishGroup = new THREE.Group();
 
   for (const school of fish_schools) {
-    const r = (school.radius_m || 8) * 0.6;
-    const h = (school.radius_m || 8) * 1.2;
-    const geo = new THREE.CylinderGeometry(r, r, h, 16, 1, true);
-    const mat = new THREE.MeshPhongMaterial({
-      color: 0xffe066, emissive: 0x604a00,
-      transparent: true, opacity: 0.32,
-      side: THREE.DoubleSide, depthWrite: false,
-    });
-    const mesh = new THREE.Mesh(geo, mat);
-    // CylinderGeometry is Y-up; rotate to Z-up
-    mesh.rotation.x = Math.PI / 2;
-    mesh.position.set(
-      school.east_m  || 0,
-      school.north_m || 0,
-      -(school.depth_m || 5)
-    );
-    fishGroup.add(mesh);
+    const r  = school.radius_m || 8;
+    const ex = school.east_m   || 0;
+    const ny = school.north_m  || 0;
+    const ez = -(school.depth_m || 5);
 
-    // Label sprite: tiny yellow dot on top
-    const dot = new THREE.Mesh(
-      new THREE.SphereGeometry(1.4, 8, 8),
-      new THREE.MeshBasicMaterial({ color: 0xffe066 })
+    // Semi-transparent sphere showing school volume
+    const sphere = new THREE.Mesh(
+      new THREE.SphereGeometry(r, 24, 16),
+      new THREE.MeshPhongMaterial({
+        color: 0xffe066, emissive: 0x604a00,
+        transparent: true, opacity: 0.14,
+        side: THREE.DoubleSide, depthWrite: false,
+      }),
     );
-    dot.position.set(school.east_m || 0, school.north_m || 0, -(school.depth_m || 5) + h/2 + 1.5);
-    fishGroup.add(dot);
+    sphere.position.set(ex, ny, ez);
+    fishGroup.add(sphere);
+
+    // Fish sprite — fixed world size, hovering just above the sphere
+    const sprite = new THREE.Sprite(new THREE.SpriteMaterial({
+      map: _fishTex, transparent: true, opacity: 0.95, depthWrite: false,
+    }));
+    sprite.scale.set(8, 4.6, 1);
+    sprite.position.set(ex, ny, ez + r + 3);
+    fishGroup.add(sprite);
   }
 
   scene.add(fishGroup);
@@ -939,10 +1007,138 @@ document.getElementById('btn-floor').addEventListener('click', () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+//  Click-to-inspect (raycaster)
+// ─────────────────────────────────────────────────────────────────────────────
+const raycaster   = new THREE.Raycaster();
+raycaster.params.Points.threshold = 1.5;   // pick radius for point cloud dots
+const pickTooltip = document.getElementById('pick-tooltip');
+
+// Marker: small sphere + two crosshair rings placed at the hit point
+const pickMarker = (() => {
+  const g = new THREE.Group();
+
+  const sphere = new THREE.Mesh(
+    new THREE.SphereGeometry(0.6, 12, 12),
+    new THREE.MeshBasicMaterial({ color: 0xffffff }),
+  );
+  g.add(sphere);
+
+  const ringMat = new THREE.MeshBasicMaterial({
+    color: 0xffffff, side: THREE.DoubleSide, transparent: true, opacity: 0.55,
+  });
+  // Horizontal ring (XY plane — lies flat in Z-up scene)
+  const ringH = new THREE.Mesh(new THREE.RingGeometry(1.6, 2.2, 32), ringMat);
+  g.add(ringH);
+  // Vertical ring (XZ plane — stands upright)
+  const ringV = new THREE.Mesh(new THREE.RingGeometry(1.6, 2.2, 32), ringMat);
+  ringV.rotation.x = Math.PI / 2;
+  g.add(ringV);
+
+  g.visible = false;
+  scene.add(g);
+  return g;
+})();
+
+let _ptrDownX = 0, _ptrDownY = 0;
+
+renderer.domElement.addEventListener('pointerdown', (e) => {
+  _ptrDownX = e.clientX;
+  _ptrDownY = e.clientY;
+});
+
+renderer.domElement.addEventListener('pointerup', (e) => {
+  const dx = e.clientX - _ptrDownX;
+  const dy = e.clientY - _ptrDownY;
+  if (dx*dx + dy*dy > 25) return;   // was a drag, not a click
+
+  const mouse = new THREE.Vector2(
+     (e.clientX / window.innerWidth)  * 2 - 1,
+    -(e.clientY / window.innerHeight) * 2 + 1,
+  );
+  raycaster.setFromCamera(mouse, camera);
+
+  const targets = [];
+  if (scanMesh) targets.push(scanMesh);
+  if (gtFloorGroup && gtFloorGroup.visible) targets.push(gtFloorGroup.children[0]);
+  targets.push(pointCloud);
+
+  const hits = raycaster.intersectObjects(targets);
+  if (hits.length === 0) { pickTooltip.style.display = 'none'; pickMarker.visible = false; return; }
+
+  const pt    = hits[0].point;
+  pickMarker.position.copy(pt);
+  pickMarker.visible = true;
+  const east  =  pt.x.toFixed(1);
+  const north =  pt.y.toFixed(1);
+  const depth = (-pt.z).toFixed(1);
+
+  pickTooltip.innerHTML =
+    `<span class="pick-label">E</span> ${east} m<br>` +
+    `<span class="pick-label">N</span> ${north} m<br>` +
+    `<span class="pick-label">D</span> ${depth} m`;
+
+  pickTooltip.style.display = 'block';
+  let tx = e.clientX + 14;
+  let ty = e.clientY - 10;
+  const tw = pickTooltip.offsetWidth;
+  const th = pickTooltip.offsetHeight;
+  if (tx + tw > window.innerWidth  - 8) tx = e.clientX - tw - 14;
+  if (ty + th > window.innerHeight - 8) ty = e.clientY - th - 10;
+  pickTooltip.style.left = tx + 'px';
+  pickTooltip.style.top  = ty + 'px';
+});
+
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') { pickTooltip.style.display = 'none'; pickMarker.visible = false; }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  WASD camera pan
+//  Moves camera.position + controls.target together so orbit pivot stays in
+//  sync and the raycaster (which reads camera directly) needs no changes.
+// ─────────────────────────────────────────────────────────────────────────────
+const _wasdKeys    = new Set();
+const _wasdForward = new THREE.Vector3();
+const _wasdRight   = new THREE.Vector3();
+const _wasdMove    = new THREE.Vector3();
+
+document.addEventListener('keydown', (e) => {
+  if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
+  _wasdKeys.add(e.key.toLowerCase());
+});
+document.addEventListener('keyup', (e) => { _wasdKeys.delete(e.key.toLowerCase()); });
+
+function _applyWASD() {
+  if (_wasdKeys.size === 0) return;
+
+  // Speed scales with camera distance so panning feels consistent when zoomed
+  const speed = camera.position.distanceTo(controls.target) * 0.012;
+
+  // Horizontal forward direction (flatten to XY plane — Z-up scene)
+  camera.getWorldDirection(_wasdForward);
+  _wasdForward.z = 0;
+  if (_wasdForward.lengthSq() < 1e-6) return;
+  _wasdForward.normalize();
+
+  // Right = forward rotated 90° CW looking down in Z-up: (fy, -fx, 0)
+  _wasdRight.set(_wasdForward.y, -_wasdForward.x, 0);
+
+  _wasdMove.set(0, 0, 0);
+  if (_wasdKeys.has('w')) _wasdMove.addScaledVector(_wasdForward,  speed);
+  if (_wasdKeys.has('s')) _wasdMove.addScaledVector(_wasdForward, -speed);
+  if (_wasdKeys.has('a')) _wasdMove.addScaledVector(_wasdRight,   -speed);
+  if (_wasdKeys.has('d')) _wasdMove.addScaledVector(_wasdRight,    speed);
+
+  camera.position.add(_wasdMove);
+  controls.target.add(_wasdMove);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 //  Render loop
 // ─────────────────────────────────────────────────────────────────────────────
 function animate() {
   requestAnimationFrame(animate);
+  _applyWASD();
   controls.update();
   renderer.render(scene, camera);
 }

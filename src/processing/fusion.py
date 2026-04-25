@@ -48,9 +48,12 @@ def _parse_echo_returns(echo: bytes, floor_depth_m: float,
     n = len(echo)
     floor_idx = int(floor_depth_m / _ECHO_MAX_RANGE_M * n)
     min_sep_idx = max(1, int(_FISH_MIN_SEPARATION_M / _ECHO_MAX_RANGE_M * n))
-    # Search up to 1m above the floor return, skip first few indices (near-field noise)
+    # The floor return is a Gaussian with this sigma (must match generator.py).
+    # Its tail at min_sep_idx is still ~88 counts — above threshold — so we cut
+    # off at 3×sigma where the tail drops to ~2 counts (noise floor).
+    floor_sigma = max(3, int(n * 0.012))
     near_field = int(0.5 / _ECHO_MAX_RANGE_M * n)
-    search_end = max(near_field + 1, floor_idx - min_sep_idx)
+    search_end = max(near_field + 1, floor_idx - max(min_sep_idx, 3 * floor_sigma))
 
     observations: List[Observation] = []
     i = near_field
@@ -179,5 +182,12 @@ class Fusion:
             sonar.echo, sonar.depth_m, e, n_pos,
             gps.ts, gps.heading_deg, gps.speed_kts,
         )
+
+        print(f"[tick ts={gps.ts:7.2f}]  floor {depth:.2f} m  "
+              f"E={e:7.1f} N={n_pos:7.1f}  "
+              f"[BLUE]")
+        for f in fish:
+            print(f"               └─ fish echo  depth={f.depth_m:.2f} m  "
+                  f"conf={f.confidence:.2f}  [ORANGE]")
 
         return [bottom] + fish

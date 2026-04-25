@@ -36,7 +36,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-app = FastAPI(title="Artifishial Intelligence v2")
+app = FastAPI(title="Artifishial Intelligence v3")
 
 # ── Session state (injected by main.py) ──────────────────────────────────────
 

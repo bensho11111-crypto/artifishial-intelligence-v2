@@ -77,7 +77,9 @@ class FloorModel:
         ])
 
     def sample_grid(self, step: int = 5) -> dict:
-        coarse = self._grid[::step, ::step].tolist()
+        # Transpose before export: _grid axis-0=east, axis-1=north (meshgrid "ij"),
+        # but the frontend reads depth_m[row=north][col=east], so we need [north, east].
+        coarse = self._grid[::step, ::step].T.tolist()
         return {
             "rows":           len(coarse),
             "cols":           len(coarse[0]) if coarse else 0,
