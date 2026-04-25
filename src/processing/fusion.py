@@ -94,19 +94,24 @@ _FWD_MAX_RANGE_M = 40.0
 _FWD_BEAM_MIN_DEG = 5.0
 _FWD_BEAM_MAX_DEG = 64.0
 _FWD_MIN_DEP_DEG  = 15.0   # ignore beams shallower than this — poor depth accuracy
-_FWD_FLOOR_THRESH = 100    # amplitude threshold for floor return detection
+# Floor returns: 185 ± 20 → min 165.  Fish returns: density*160 + 10 → max 154.
+# Threshold of 155 cleanly separates the two without overlapping either range.
+_FWD_FLOOR_THRESH = 155
+_FWD_FISH_THRESH  = 50     # amplitude threshold for mid-water (fish) returns
+# Floor Gaussian sigma in forward_scan.py is 1.5 bins; tail at sigma*3≈5 bins
+# before the floor peak still reads ~22 counts (below noise floor), so cut off there.
+_FWD_FLOOR_SIGMA  = 5      # bins to exclude before floor hit when searching for fish
 
 
 def _parse_forward_returns(scan: bytes, east_m: float, north_m: float,
-                           heading_deg: float, ts: float,
-                           speed_kts: float) -> List[Observation]:
+                           heading_deg: float, ts: float, speed_kts: float,
+                           floor_depth_m: float = 20.0) -> List[Observation]:
     """
-    Extract floor Observations from a forward-scan frame.
+    Extract floor and fish Observations from a forward-scan frame.
 
-    Each beam that produces a strong return above _FWD_FLOOR_THRESH is treated
-    as a floor hit.  The world position is computed from the beam angle and
-    slant range.  Confidence is scaled by depression angle (steeper = more
-    reliable) and capped well below the downward-sonar primary return.
+    For each beam:
+      - Scan for the first return >= _FWD_FLOOR_THRESH  → floor Observation
+      - Scan bins before the floor hit for peaks >= _FWD_FISH_THRESH → fish Observations
     """
     if not scan or len(scan) < _FWD_N_BEAMS * _FWD_N_RANGE:
         return []
@@ -127,46 +132,64 @@ def _parse_forward_returns(scan: bytes, east_m: float, north_m: float,
         theta = math.radians(theta_deg)
         sin_t = math.sin(theta)
         cos_t = math.cos(theta)
+        base  = b * _FWD_N_RANGE
 
-        base = b * _FWD_N_RANGE
-        peak_ri, peak_amp = -1, 0
-        for ri in range(_FWD_N_RANGE):
+        angle_factor = (theta_deg - _FWD_MIN_DEP_DEG) / (_FWD_BEAM_MAX_DEG - _FWD_MIN_DEP_DEG)
+
+        # ── Find floor return ─────────────────────────────────────────────────
+        # Scan backwards: floor is always the deepest (largest ri) return —
+        # the generator breaks at the floor so no fish can appear beyond it.
+        # Guard: if the floor is beyond scan range for this beam, there is no
+        # floor return in the data and a distant fish could otherwise be
+        # misclassified. Use the downward depth reading to compute the expected
+        # floor range and reject any candidate that falls too far from it.
+        expected_floor_ri = int((floor_depth_m / sin_t) / step_m)
+        floor_ri, floor_amp = -1, 0
+        for ri in range(_FWD_N_RANGE - 1, -1, -1):
             amp = scan[base + ri]
             if amp >= _FWD_FLOOR_THRESH:
-                # Walk to find blob peak
-                peak_amp = amp
-                peak_ri  = ri
+                tolerance = max(12, int(expected_floor_ri * 0.35))
+                if abs(ri - expected_floor_ri) <= tolerance:
+                    floor_amp = amp
+                    floor_ri  = ri
+                break
+
+        if floor_ri >= 0:
+            r     = (floor_ri + 0.5) * step_m
+            conf  = round(min(0.45, (floor_amp / 255.0) * 0.45 * angle_factor), 3)
+            observations.append(Observation(
+                ts=ts, east_m=east_m + r*fwd_e*cos_t,
+                north_m=north_m + r*fwd_n*cos_t,
+                depth_m=r*sin_t, confidence=conf,
+                heading_deg=heading_deg, speed_kts=speed_kts,
+                is_floor=True,
+            ))
+
+        # ── Find fish returns above the floor ─────────────────────────────────
+        search_end = max(0, floor_ri - _FWD_FLOOR_SIGMA) if floor_ri >= 0 else _FWD_N_RANGE
+        ri = 0
+        while ri < search_end:
+            amp = scan[base + ri]
+            if amp >= _FWD_FISH_THRESH:
+                peak_amp, peak_ri = amp, ri
                 j = ri + 1
-                while j < _FWD_N_RANGE and scan[base + j] >= _FWD_FLOOR_THRESH // 2:
+                while j < search_end and scan[base + j] >= _FWD_FISH_THRESH // 2:
                     if scan[base + j] > peak_amp:
                         peak_amp = scan[base + j]
                         peak_ri  = j
                     j += 1
-                break
-
-        if peak_ri < 0:
-            continue
-
-        r     = (peak_ri + 0.5) * step_m
-        obs_e = east_m  + r * fwd_e * cos_t
-        obs_n = north_m + r * fwd_n * cos_t
-        obs_d = r * sin_t
-
-        # Steeper angle → closer range → better accuracy → higher confidence.
-        # Cap at 0.45 so forward returns never outrank the primary downward return.
-        angle_factor = (theta_deg - _FWD_MIN_DEP_DEG) / (_FWD_BEAM_MAX_DEG - _FWD_MIN_DEP_DEG)
-        conf = round(min(0.45, (peak_amp / 255.0) * 0.45 * angle_factor), 3)
-
-        observations.append(Observation(
-            ts          = ts,
-            east_m      = obs_e,
-            north_m     = obs_n,
-            depth_m     = obs_d,
-            confidence  = conf,
-            heading_deg = heading_deg,
-            speed_kts   = speed_kts,
-            is_floor    = True,
-        ))
+                r    = (peak_ri + 0.5) * step_m
+                conf = round(min(0.45, (peak_amp / 255.0) * 0.45), 3)
+                observations.append(Observation(
+                    ts=ts, east_m=east_m + r*fwd_e*cos_t,
+                    north_m=north_m + r*fwd_n*cos_t,
+                    depth_m=r*sin_t, confidence=conf,
+                    heading_deg=heading_deg, speed_kts=speed_kts,
+                    is_floor=False,
+                ))
+                ri = max(j, ri + 1)
+            else:
+                ri += 1
 
     return observations
 
@@ -273,6 +296,7 @@ class Fusion:
         fwd_obs = _parse_forward_returns(
             sonar.forward_scan, e, n_pos,
             gps.heading_deg, gps.ts, gps.speed_kts,
+            floor_depth_m=depth,
         ) if sonar.forward_scan else []
 
         print(f"[tick ts={gps.ts:7.2f}]  floor {depth:.2f} m  "
