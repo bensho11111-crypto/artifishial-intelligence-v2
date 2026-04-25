@@ -62,4 +62,5 @@ class Observation:
     confidence: float   # 0.0–1.0
     heading_deg: float
     speed_kts: float
-    is_floor: bool = True   # False for mid-water echo returns (fish arches)
+    is_floor: bool = True    # False for mid-water echo returns (fish arches)
+    echo: Optional[bytes] = None  # raw A-scope bytes, only on floor observations

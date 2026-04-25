@@ -27,6 +27,7 @@ REST:
   GET /api/ground-truth   → ground truth JSON (if available)
 """
 import asyncio
+import base64
 import json
 import time
 from pathlib import Path
@@ -97,6 +98,11 @@ def _build_update(current_ts: Optional[float] = None) -> dict:
             "fraction":   (_replay_ctrl.position_s / _replay_ctrl.duration_s)
                           if _replay_ctrl.duration_s else 0.0,
         }
+
+    echo = _world_state.echo_at(ts) if ts is not None else None
+    if echo:
+        payload["echo"] = base64.b64encode(echo).decode("ascii")
+
     return payload
 
 

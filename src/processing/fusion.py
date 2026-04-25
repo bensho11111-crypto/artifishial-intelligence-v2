@@ -175,6 +175,7 @@ class Fusion:
             confidence=round(max(0.0, min(1.0, conf)), 3),
             heading_deg=gps.heading_deg,
             speed_kts=gps.speed_kts,
+            echo=sonar.echo or None,
         )
 
         # Parse echo array for secondary returns (fish arches)

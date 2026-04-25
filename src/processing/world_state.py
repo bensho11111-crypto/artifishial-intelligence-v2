@@ -39,7 +39,8 @@ class WorldState:
     """
 
     def __init__(self):
-        self._data: Optional[np.ndarray] = None   # shape (N, 7), float32
+        self._data: Optional[np.ndarray] = None   # shape (N, 8), float32
+        self._echoes: list[tuple[float, bytes]] = []  # (ts, echo) for floor obs
 
     # ── mutation ─────────────────────────────────────────────────────────────
 
@@ -49,9 +50,12 @@ class WorldState:
                          1.0 if obs.is_floor else 0.0]],
                        dtype=np.float32)
         self._data = row if self._data is None else np.vstack((self._data, row))
+        if obs.is_floor and obs.echo:
+            self._echoes.append((obs.ts, obs.echo))
 
     def reset(self) -> None:
         self._data = None
+        self._echoes = []
 
     # ── queries ───────────────────────────────────────────────────────────────
 
@@ -63,6 +67,14 @@ class WorldState:
             if idx > 0:
                 ws._data = self._data[:idx]
         return ws
+
+    def echo_at(self, ts: float) -> Optional[bytes]:
+        """Return the most recent floor echo at or before ts."""
+        if not self._echoes:
+            return None
+        import bisect
+        idx = bisect.bisect_right(self._echoes, (ts, b'\xff' * 512)) - 1
+        return self._echoes[idx][1] if idx >= 0 else None
 
     def latest_ts(self) -> Optional[float]:
         if self._data is None or len(self._data) == 0:
