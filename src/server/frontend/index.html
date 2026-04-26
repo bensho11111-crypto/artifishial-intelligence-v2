@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Artifishial Intelligence v3.1 (cone)</title>
+  <title>Artifishial Intelligence v3.3 (cone+perf+fe)</title>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -285,12 +285,14 @@
 
 <!-- HUD -->
 <div id="hud">
-  <div class="hud-badge hud-title">ARTIFISHIAL INTELLIGENCE v3.1 (cone)</div>
+  <div class="hud-badge hud-title">ARTIFISHIAL INTELLIGENCE v3.3 (cone+perf+fe)</div>
   <div class="hud-row">
     <div class="hud-badge">POINTS <span id="hud-points">0</span></div>
     <div class="hud-badge">DEPTH <span id="hud-depth">—</span> m</div>
     <div class="hud-badge">SPEED <span id="hud-speed">—</span> kts</div>
     <div class="hud-badge">HDG <span id="hud-heading">—</span>°</div>
+    <div class="hud-badge">FPS <span id="hud-fps">—</span></div>
+    <div class="hud-badge">PC <span id="hud-pcms">—</span> ms</div>
   </div>
 </div>
 
@@ -611,61 +613,146 @@ function depthColour(depth, maxDepth) {
 // ─────────────────────────────────────────────────────────────────────────────
 //  Point cloud
 // ─────────────────────────────────────────────────────────────────────────────
-let pcGeometry  = new THREE.BufferGeometry();
-let pcMaterial  = new THREE.PointsMaterial({
+// Single reusable geometry + Float32Array buffers that grow geometrically.
+// Avoids per-frame allocation (was ~1 MB/sec at 40 K points × 10 Hz) and the
+// per-point THREE.Color() allocations (was ~400 K obj/sec).
+const pcGeometry = new THREE.BufferGeometry();
+const pcMaterial = new THREE.PointsMaterial({
   size: 1.4, vertexColors: true, sizeAttenuation: true,
   transparent: true, opacity: 0.92,
 });
-let pointCloud = new THREE.Points(pcGeometry, pcMaterial);
+const pointCloud = new THREE.Points(pcGeometry, pcMaterial);
 scene.add(pointCloud);
+
+let _pcPosBuf  = new Float32Array(1024 * 3);
+let _pcColBuf  = new Float32Array(1024 * 3);
+let _pcPosAttr = new THREE.BufferAttribute(_pcPosBuf, 3);
+let _pcColAttr = new THREE.BufferAttribute(_pcColBuf, 3);
+_pcPosAttr.setUsage(THREE.DynamicDrawUsage);
+_pcColAttr.setUsage(THREE.DynamicDrawUsage);
+pcGeometry.setAttribute('position', _pcPosAttr);
+pcGeometry.setAttribute('color',    _pcColAttr);
+pcGeometry.setDrawRange(0, 0);
+
+function _pcEnsureCapacity(n) {
+  if (n * 3 <= _pcPosBuf.length) return;
+  let cap = _pcPosBuf.length / 3;
+  while (cap < n) cap *= 2;
+  _pcPosBuf  = new Float32Array(cap * 3);
+  _pcColBuf  = new Float32Array(cap * 3);
+  _pcPosAttr = new THREE.BufferAttribute(_pcPosBuf, 3);
+  _pcColAttr = new THREE.BufferAttribute(_pcColBuf, 3);
+  _pcPosAttr.setUsage(THREE.DynamicDrawUsage);
+  _pcColAttr.setUsage(THREE.DynamicDrawUsage);
+  pcGeometry.setAttribute('position', _pcPosAttr);
+  pcGeometry.setAttribute('color',    _pcColAttr);
+}
+
+// 256-entry RGB palette for floor depth colouring (shallow → mid → deep).
+// Index = round(depth_t * 255). Pre-built once; lerp via integer indexing.
+const _depthPalette = new Float32Array(256 * 3);
+(function buildDepthPalette() {
+  const tmp = new THREE.Color();
+  for (let i = 0; i < 256; i++) {
+    const t = i / 255;
+    if (t < 0.5) tmp.lerpColors(_cShallow, _cMid, t * 2);
+    else         tmp.lerpColors(_cMid,     _cDeep,(t - 0.5) * 2);
+    _depthPalette[i*3]   = tmp.r;
+    _depthPalette[i*3+1] = tmp.g;
+    _depthPalette[i*3+2] = tmp.b;
+  }
+})();
+
+let _pcLastN     = 0;       // last frame's point count
+let _pcCachedMaxD = 1;      // cached max floor depth
+let _pcMsEMA     = null;    // EMA of updatePointCloud cost (ms)
 
 function updatePointCloud(pc) {
   const x = pc.x || [], y = pc.y || [], depth = pc.depth || [];
-  const isFloor = pc.is_floor || [];   // true = bottom return, false = fish echo
+  const isFloor = pc.is_floor || [];
   const conf    = pc.confidence || [];
   const n = x.length;
-  if (n === 0) return;
+  if (n === 0) {
+    pcGeometry.setDrawRange(0, 0);
+    document.getElementById('hud-points').textContent = 0;
+    return;
+  }
 
-  // Compute max depth using only floor observations for the colour scale
-  const floorDepths = depth.filter((_, i) => isFloor[i] !== false);
-  const maxD = Math.max(...(floorDepths.length ? floorDepths : depth), 1);
+  _pcEnsureCapacity(n);
 
-  const pos   = new Float32Array(n * 3);
-  const col   = new Float32Array(n * 3);
-
+  // Find frame's max floor depth in O(N) (loop, not spread, to avoid
+  // call-stack overflow on large arrays).
+  let frameMaxD = 1, depthSum = 0;
   for (let i = 0; i < n; i++) {
-    pos[i*3]   = x[i];
-    pos[i*3+1] = y[i];
-    pos[i*3+2] = -depth[i];   // Z-up: depth is negative Z
+    depthSum += depth[i];
+    if (isFloor[i] !== false) {
+      const d = depth[i];
+      if (d > frameMaxD) frameMaxD = d;
+    }
+  }
 
-    let c;
+  // Re-colour the whole array if (a) array shrank (old indices may now point
+  // at different observations) or (b) max depth changed (palette mapping
+  // shifted).  Otherwise just colour the new tail.
+  const shrunk      = n < _pcLastN;
+  const maxChanged  = frameMaxD !== _pcCachedMaxD;
+  const fullRebuild = shrunk || maxChanged;
+  _pcCachedMaxD = frameMaxD;
+  const invMaxD = 1 / _pcCachedMaxD;
+
+  const start    = fullRebuild ? 0 : _pcLastN;
+  const posStart = fullRebuild ? 0 : _pcLastN;
+
+  for (let i = posStart; i < n; i++) {
+    const i3 = i * 3;
+    _pcPosBuf[i3]   = x[i];
+    _pcPosBuf[i3+1] = y[i];
+    _pcPosBuf[i3+2] = -depth[i];
+  }
+
+  // Colour the appropriate range.
+  for (let i = start; i < n; i++) {
+    const i3 = i * 3;
     if (isFloor[i] === false) {
       // Fish echo — orange, dimmed by decayed confidence
-      const cv = Math.min(1, Math.max(0, (conf[i] || 0) / 0.65));
-      c = { r: 1.0 * cv, g: 0.55 * cv, b: 0.05 * cv };
-    } else if ((conf[i] || 0) <= 0.45) {
-      // Forward-scan floor return — muted cyan to distinguish from primary returns
-      const base = depthColour(depth[i], maxD);
-      c = { r: base.r * 0.55, g: base.g * 0.85 + 0.15, b: base.b * 0.85 + 0.15 };
+      let cv = (conf[i] || 0) * (1 / 0.65);
+      if (cv > 1) cv = 1; else if (cv < 0) cv = 0;
+      _pcColBuf[i3]   = cv;
+      _pcColBuf[i3+1] = 0.55 * cv;
+      _pcColBuf[i3+2] = 0.05 * cv;
     } else {
-      c = depthColour(depth[i], maxD);
+      // Floor — palette lookup by depth
+      let t = depth[i] * invMaxD;
+      if (t > 1) t = 1; else if (t < 0) t = 0;
+      const pi = ((t * 255) | 0) * 3;
+      let r = _depthPalette[pi], g = _depthPalette[pi+1], b = _depthPalette[pi+2];
+      if ((conf[i] || 0) <= 0.45) {
+        // Forward-scan floor return — muted cyan
+        r = r * 0.55;
+        g = g * 0.85 + 0.15;
+        b = b * 0.85 + 0.15;
+      }
+      _pcColBuf[i3]   = r;
+      _pcColBuf[i3+1] = g;
+      _pcColBuf[i3+2] = b;
     }
-    col[i*3]   = c.r;
-    col[i*3+1] = c.g;
-    col[i*3+2] = c.b;
   }
 
-  pcGeometry.dispose();
-  pcGeometry = new THREE.BufferGeometry();
-  pcGeometry.setAttribute('position', new THREE.BufferAttribute(pos, 3));
-  pcGeometry.setAttribute('color',    new THREE.BufferAttribute(col, 3));
-  pointCloud.geometry = pcGeometry;
+  // Tell Three.js which slice changed so it only uploads that subrange.
+  _pcPosAttr.updateRange.offset = posStart * 3;
+  _pcPosAttr.updateRange.count  = (n - posStart) * 3;
+  _pcPosAttr.needsUpdate = true;
+  _pcColAttr.updateRange.offset = start * 3;
+  _pcColAttr.updateRange.count  = (n - start) * 3;
+  _pcColAttr.needsUpdate = true;
+
+  pcGeometry.setDrawRange(0, n);
+  pcGeometry.computeBoundingSphere();
+
+  _pcLastN = n;
 
   document.getElementById('hud-points').textContent = n;
-  if (depth.length) {
-    const mean = depth.reduce((a,b) => a+b, 0) / depth.length;
-    document.getElementById('hud-depth').textContent = mean.toFixed(1);
-  }
+  document.getElementById('hud-depth').textContent  = (depthSum / n).toFixed(1);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1161,7 +1248,14 @@ function connect() {
       }
 
       case 'map_update':
-        if (msg.pointcloud)    updatePointCloud(msg.pointcloud);
+        if (msg.pointcloud) {
+          const _t0 = performance.now();
+          updatePointCloud(msg.pointcloud);
+          // EMA smoothing so the readout doesn't jitter every frame
+          const dt = performance.now() - _t0;
+          _pcMsEMA = _pcMsEMA == null ? dt : (_pcMsEMA * 0.8 + dt * 0.2);
+          document.getElementById('hud-pcms').textContent = _pcMsEMA.toFixed(1);
+        }
         if (msg.boat)          updateBoat(msg.boat);
         if (msg.mesh)          updateScanMesh(msg.mesh);
         if (msg.fish_positions) updateFishPositions(msg.fish_positions);
@@ -1607,11 +1701,24 @@ document.getElementById('ff-tab-fwd').addEventListener('click', () => {
 // ─────────────────────────────────────────────────────────────────────────────
 //  Render loop
 // ─────────────────────────────────────────────────────────────────────────────
+// FPS counter: average over a 1 s sliding window
+let _fpsLast = performance.now(), _fpsCount = 0;
+function _fpsTick(now) {
+  _fpsCount++;
+  if (now - _fpsLast >= 1000) {
+    document.getElementById('hud-fps').textContent =
+      Math.round(_fpsCount * 1000 / (now - _fpsLast));
+    _fpsLast = now;
+    _fpsCount = 0;
+  }
+}
+
 function animate() {
   requestAnimationFrame(animate);
   _applyWASD();
   controls.update();
   renderer.render(scene, camera);
+  _fpsTick(performance.now());
 }
 animate();
 </script>
