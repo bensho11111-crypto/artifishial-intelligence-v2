@@ -1,7 +1,7 @@
 import math
 import pytest
 from synthetic.generator import FishSchool, generate, SONAR_HZ, GPS_HZ, ECHO_SIZE
-from synthetic.forward_scan import N_BEAMS, N_RANGE
+from synthetic.forward_scan import N_BEAMS, N_RANGE, N_AZIMUTH
 
 
 # ── FishSchool movement ───────────────────────────────────────────────────────
@@ -70,7 +70,7 @@ def test_generate_gps_ticks_have_forward_scan(short_session):
     for tick in short_session.ticks:
         if tick.gps is not None and tick.sonar is not None:
             assert tick.sonar.forward_scan is not None
-            assert len(tick.sonar.forward_scan) == N_BEAMS * N_RANGE
+            assert len(tick.sonar.forward_scan) == N_AZIMUTH * N_BEAMS * N_RANGE
 
 
 def test_generate_non_gps_ticks_no_forward_scan(short_session):

@@ -19,7 +19,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 
 def parse_args():
-    p = argparse.ArgumentParser(description="Artifishial Intelligence v3")
+    p = argparse.ArgumentParser(description="Artifishial Intelligence v3.1 (cone)")
     p.add_argument("--replay",    default=None, metavar="FILE",
                    help=".ticks SQLite recording to replay")
     p.add_argument("--live",      default=None, metavar="PORT",
@@ -110,7 +110,7 @@ async def main():
                 duration_s=replay_ctrl.duration_s if replay_ctrl else None)
 
     print(f"\n{'='*52}")
-    print(f"  Artifishial Intelligence v3")
+    print(f"  Artifishial Intelligence v3.1 (cone)")
     print(f"  AR viewer : http://localhost:{args.port}")
     print(f"  WebSocket : ws://localhost:{args.port}/ws/state")
     print(f"  Mode      : "

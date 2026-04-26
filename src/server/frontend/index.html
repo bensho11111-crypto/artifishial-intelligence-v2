@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Artifishial Intelligence v3</title>
+  <title>Artifishial Intelligence v3.1 (cone)</title>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -285,7 +285,7 @@
 
 <!-- HUD -->
 <div id="hud">
-  <div class="hud-badge hud-title">ARTIFISHIAL INTELLIGENCE v3</div>
+  <div class="hud-badge hud-title">ARTIFISHIAL INTELLIGENCE v3.1 (cone)</div>
   <div class="hud-row">
     <div class="hud-badge">POINTS <span id="hud-points">0</span></div>
     <div class="hud-badge">DEPTH <span id="hud-depth">—</span> m</div>
@@ -320,6 +320,7 @@
   <button class="gt-btn active" id="btn-fish">Show Fish</button>
   <button class="gt-btn active" id="btn-floor">Show Floor</button>
   <button class="gt-btn" id="btn-ff">Fish Finder</button>
+  <button class="gt-btn active" id="btn-cone">Show Cone</button>
 </div>
 
 <!-- Replay controls -->
@@ -731,6 +732,127 @@ const ringGeo = new THREE.RingGeometry(4, 5, 32);
 const ringMat = new THREE.MeshBasicMaterial({ color: 0x4ae0c8, side: THREE.DoubleSide, transparent: true, opacity: 0.4 });
 const boatRing = new THREE.Mesh(ringGeo, ringMat);
 boatGroup.add(boatRing);
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Forward-scan cone wedge — visualises the swept volume in front of the boat
+//  Local frame: boatGroup has rotation.z = -heading, so the boat's forward
+//  direction is +Y (north when heading = 0). Z = up; depth grows downward (-Z).
+// ─────────────────────────────────────────────────────────────────────────────
+const FWD_CONE_MAX_RANGE_M    = 40.0;
+const FWD_CONE_BEAM_MIN_DEG   = 5.0;
+const FWD_CONE_BEAM_MAX_DEG   = 64.0;
+const FWD_CONE_AZ_HALF_DEG    = 30.0;
+
+function buildForwardCone() {
+  // Sample the wedge surface as a (azimuth × beam) grid of points, all at
+  // MAX_RANGE. Adding the apex at (0,0,0) gives us a closed wedge mesh.
+  const NA = 17;   // azimuth samples (visualization only — denser = smoother)
+  const NB = 13;   // depression samples
+  const positions = [0, 0, 0];   // index 0 = apex (boat)
+  for (let ai = 0; ai < NA; ai++) {
+    const az = (-FWD_CONE_AZ_HALF_DEG + ai * (2 * FWD_CONE_AZ_HALF_DEG) / (NA - 1))
+               * Math.PI / 180;
+    for (let bi = 0; bi < NB; bi++) {
+      const dep = (FWD_CONE_BEAM_MIN_DEG + bi * (FWD_CONE_BEAM_MAX_DEG - FWD_CONE_BEAM_MIN_DEG) / (NB - 1))
+                  * Math.PI / 180;
+      const horiz = FWD_CONE_MAX_RANGE_M * Math.cos(dep);
+      const x =  horiz * Math.sin(az);
+      const y =  horiz * Math.cos(az);
+      const z = -FWD_CONE_MAX_RANGE_M * Math.sin(dep);
+      positions.push(x, y, z);
+    }
+  }
+
+  const idx = (ai, bi) => 1 + ai * NB + bi;
+  const indices = [];
+
+  // Far-face quads (between adjacent azimuth and beam samples)
+  for (let ai = 0; ai < NA - 1; ai++) {
+    for (let bi = 0; bi < NB - 1; bi++) {
+      const a = idx(ai,     bi);
+      const b = idx(ai + 1, bi);
+      const c = idx(ai + 1, bi + 1);
+      const d = idx(ai,     bi + 1);
+      indices.push(a, b, c,  a, c, d);
+    }
+  }
+  // Side fans connecting the apex to the boundary curves
+  // Top edge (shallowest beam, varying azimuth)
+  for (let ai = 0; ai < NA - 1; ai++) {
+    indices.push(0, idx(ai, 0), idx(ai + 1, 0));
+  }
+  // Bottom edge (steepest beam)
+  for (let ai = 0; ai < NA - 1; ai++) {
+    indices.push(0, idx(ai + 1, NB - 1), idx(ai, NB - 1));
+  }
+  // Left edge (min azimuth, varying beam)
+  for (let bi = 0; bi < NB - 1; bi++) {
+    indices.push(0, idx(0, bi + 1), idx(0, bi));
+  }
+  // Right edge (max azimuth)
+  for (let bi = 0; bi < NB - 1; bi++) {
+    indices.push(0, idx(NA - 1, bi), idx(NA - 1, bi + 1));
+  }
+
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(positions), 3));
+  geo.setIndex(indices);
+  geo.computeVertexNormals();
+
+  const fillMat = new THREE.MeshBasicMaterial({
+    color: 0x4ae0c8, transparent: true, opacity: 0.08,
+    side: THREE.DoubleSide, depthWrite: false,
+  });
+  const fill = new THREE.Mesh(geo, fillMat);
+
+  // Outline edges around the wedge boundary for readability
+  const outlinePts = [];
+  // Far-face boundary (4 edges around the spherical-cap rectangle)
+  for (let bi = 0; bi < NB; bi++) {            // left edge (az = -half)
+    const i = idx(0, bi) * 3;
+    outlinePts.push(positions[i], positions[i+1], positions[i+2]);
+  }
+  for (let ai = 1; ai < NA; ai++) {            // bottom edge (max beam)
+    const i = idx(ai, NB - 1) * 3;
+    outlinePts.push(positions[i], positions[i+1], positions[i+2]);
+  }
+  for (let bi = NB - 2; bi >= 0; bi--) {       // right edge (az = +half)
+    const i = idx(NA - 1, bi) * 3;
+    outlinePts.push(positions[i], positions[i+1], positions[i+2]);
+  }
+  for (let ai = NA - 2; ai >= 0; ai--) {       // top edge (min beam)
+    const i = idx(ai, 0) * 3;
+    outlinePts.push(positions[i], positions[i+1], positions[i+2]);
+  }
+  // Apex spokes — four corners back to (0,0,0)
+  const corners = [idx(0, 0), idx(NA - 1, 0), idx(NA - 1, NB - 1), idx(0, NB - 1)];
+  const spokePts = [];
+  for (const c of corners) {
+    spokePts.push(0, 0, 0,
+                  positions[c * 3], positions[c * 3 + 1], positions[c * 3 + 2]);
+  }
+
+  const outlineGeo = new THREE.BufferGeometry();
+  outlineGeo.setAttribute('position',
+    new THREE.BufferAttribute(new Float32Array(outlinePts), 3));
+  const outline = new THREE.LineLoop(outlineGeo,
+    new THREE.LineBasicMaterial({ color: 0x4ae0c8, transparent: true, opacity: 0.55 }));
+
+  const spokeGeo = new THREE.BufferGeometry();
+  spokeGeo.setAttribute('position',
+    new THREE.BufferAttribute(new Float32Array(spokePts), 3));
+  const spokes = new THREE.LineSegments(spokeGeo,
+    new THREE.LineBasicMaterial({ color: 0x4ae0c8, transparent: true, opacity: 0.35 }));
+
+  const group = new THREE.Group();
+  group.add(fill);
+  group.add(outline);
+  group.add(spokes);
+  return group;
+}
+
+const forwardCone = buildForwardCone();
+boatGroup.add(forwardCone);
 
 function updateBoat(boat) {
   if (!boat || boat.east === undefined) return;
@@ -1345,12 +1467,21 @@ document.getElementById('btn-ff').addEventListener('click', () => {
   document.getElementById('btn-ff').classList.toggle('active', ffVisible);
 });
 
+let coneVisible = true;
+document.getElementById('btn-cone').addEventListener('click', () => {
+  coneVisible = !coneVisible;
+  forwardCone.visible = coneVisible;
+  document.getElementById('btn-cone').classList.toggle('active', coneVisible);
+});
+
 // ─────────────────────────────────────────────────────────────────────────────
 //  Forward-facing fish finder
 //  Must mirror constants in src/synthetic/forward_scan.py
 // ─────────────────────────────────────────────────────────────────────────────
 const FF_FWD_N_BEAMS    = 60;
 const FF_FWD_N_RANGE    = 128;
+const FF_FWD_N_AZIMUTH  = 24;
+const FF_FWD_AZ_HALF_DEG = 30.0;  // ±30° horizontal sweep
 const FF_FWD_MAX_RANGE  = 40.0;   // metres
 const FF_FWD_MIN_DEG    = 5.0;
 const FF_FWD_MAX_DEG    = 64.0;
@@ -1409,10 +1540,25 @@ function _fwdDrawGrid() {
   }
 }
 
+// Max-project across azimuth: collapse the 3D wedge to a 2D (beam, range)
+// frame by taking the maximum amplitude over all azimuth slices. Off-axis
+// returns appear at their true (forward, depth) position.
+const _fwdProjected = new Uint8Array(FF_FWD_N_BEAMS * FF_FWD_N_RANGE);
+
 function ffDrawForward(fwdB64) {
   const bin   = atob(fwdB64);
   const bytes = new Uint8Array(bin.length);
   for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+
+  const slabSize = FF_FWD_N_BEAMS * FF_FWD_N_RANGE;
+  _fwdProjected.fill(0);
+  for (let a = 0; a < FF_FWD_N_AZIMUTH; a++) {
+    const off = a * slabSize;
+    for (let i = 0; i < slabSize; i++) {
+      const v = bytes[off + i];
+      if (v > _fwdProjected[i]) _fwdProjected[i] = v;
+    }
+  }
 
   const img = ffFwdCtx.createImageData(FF_FWD_W, FF_FWD_H);
   const d   = img.data;
@@ -1427,7 +1573,7 @@ function ffDrawForward(fwdB64) {
         d[pi] = d[pi+1] = d[pi+2] = 0; d[pi+3] = 255;
         continue;
       }
-      const amp = bytes[b * FF_FWD_N_RANGE + r];
+      const amp = _fwdProjected[b * FF_FWD_N_RANGE + r];
       d[pi]   = _ffLUT[amp * 3];
       d[pi+1] = _ffLUT[amp * 3 + 1];
       d[pi+2] = _ffLUT[amp * 3 + 2];
