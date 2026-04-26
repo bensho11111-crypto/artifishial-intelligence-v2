@@ -9,12 +9,17 @@ Returns a list of Observations on each valid GPS tick:
   [1+] fish / secondary returns found above the bottom in the echo array
 
 Deterministic: all timestamps come from ticks, not from time.time().
+
+Set FUSION_DEBUG=1 in the environment for per-tick observation logging.
 """
 from __future__ import annotations
 import math
+import os
 from typing import List, Optional
 import numpy as np
 from ticks.models import Tick, SonarTick, GpsTick, Observation
+
+_DEBUG = os.environ.get("FUSION_DEBUG", "") not in ("", "0", "false", "False")
 
 # Must match the constants used in the sonar echo generator
 _ECHO_MAX_RANGE_M = 60.0
@@ -105,93 +110,134 @@ _FWD_FISH_THRESH  = 50     # amplitude threshold for mid-water (fish) returns
 _FWD_FLOOR_SIGMA  = 5      # bins to exclude before floor hit when searching for fish
 
 
+# Precomputed beam geometry (constant per process)
+_FWD_BEAM_DEG = np.linspace(_FWD_BEAM_MIN_DEG, _FWD_BEAM_MAX_DEG, _FWD_N_BEAMS,
+                            dtype=np.float64)
+_FWD_BEAM_VALID    = _FWD_BEAM_DEG >= _FWD_MIN_DEP_DEG               # (BEAM,) bool
+_FWD_BEAM_SIN      = np.sin(np.radians(_FWD_BEAM_DEG))
+_FWD_BEAM_COS      = np.cos(np.radians(_FWD_BEAM_DEG))
+_FWD_BEAM_ANG_FAC  = ((_FWD_BEAM_DEG - _FWD_MIN_DEP_DEG)
+                     / (_FWD_BEAM_MAX_DEG - _FWD_MIN_DEP_DEG))
+_FWD_AZ_OFFSET     = np.linspace(-_FWD_AZIMUTH_HALF_DEG, _FWD_AZIMUTH_HALF_DEG,
+                                 _FWD_N_AZIMUTH, dtype=np.float64)
+_FWD_STEP_M        = _FWD_MAX_RANGE_M / _FWD_N_RANGE
+
+
 def _parse_forward_returns(scan: bytes, east_m: float, north_m: float,
                            heading_deg: float, ts: float, speed_kts: float,
                            floor_depth_m: float = 20.0) -> List[Observation]:
     """
     Extract floor and fish Observations from a forward-scan frame.
 
-    Walks every (azimuth, beam) ray. For each:
-      - Scan for the first return >= _FWD_FLOOR_THRESH  → floor Observation
-      - Scan bins before the floor hit for peaks >= _FWD_FISH_THRESH → fish Observations
+    Vectorised per-(az, beam) floor extraction; per-ray Python loop is only
+    entered for fish detection on rays that have any above-threshold bins.
     """
     expected_size = _FWD_N_AZIMUTH * _FWD_N_BEAMS * _FWD_N_RANGE
     if not scan or len(scan) < expected_size:
         return []
 
-    step_m   = _FWD_MAX_RANGE_M / _FWD_N_RANGE
-    deg_span = _FWD_BEAM_MAX_DEG - _FWD_BEAM_MIN_DEG
-    az_span  = 2 * _FWD_AZIMUTH_HALF_DEG
+    arr = np.frombuffer(scan, dtype=np.uint8, count=expected_size).reshape(
+        _FWD_N_AZIMUTH, _FWD_N_BEAMS, _FWD_N_RANGE)
+
+    # World-frame ray direction per azimuth (broadcast over beams later)
+    az_world_rad = np.radians(heading_deg + _FWD_AZ_OFFSET)              # (AZ,)
+    fwd_e_az     = np.sin(az_world_rad)                                  # (AZ,)
+    fwd_n_az     = np.cos(az_world_rad)
+
+    # ── Floor detection: largest ri where amp >= FLOOR_THRESH ────────────────
+    mask = arr >= _FWD_FLOOR_THRESH                                      # (AZ, BEAM, RANGE)
+    has_floor = mask.any(axis=2)                                         # (AZ, BEAM)
+    # argmax on reversed range → distance from end of last True; subtract for index
+    last_true = (_FWD_N_RANGE - 1) - mask[:, :, ::-1].argmax(axis=2)     # (AZ, BEAM)
+    floor_ri  = np.where(has_floor, last_true, -1)                        # (AZ, BEAM)
+
+    # Tolerance gate (must match scalar version exactly)
+    sin_t_b   = _FWD_BEAM_SIN[None, :]                                   # (1, BEAM)
+    safe_sin  = np.where(sin_t_b > 0, sin_t_b, 1.0)
+    expected  = (floor_depth_m / safe_sin) / _FWD_STEP_M                 # (1, BEAM)
+    expected_ri = expected.astype(np.int64)
+    expected_ri = np.broadcast_to(expected_ri, floor_ri.shape)
+    tolerance = np.maximum(12, (expected_ri * 0.35).astype(np.int64))
+    in_tol    = np.abs(floor_ri - expected_ri) <= tolerance
+    keep_floor = (floor_ri >= 0) & in_tol & _FWD_BEAM_VALID[None, :]
+    # When candidate exists but fails tolerance, scalar version sets floor_ri=-1
+    floor_ri = np.where(keep_floor, floor_ri, -1)
+
+    floor_amp = np.zeros(floor_ri.shape, dtype=np.uint8)
+    az_idx_g, beam_idx_g = np.where(keep_floor)
+    if az_idx_g.size:
+        floor_amp[az_idx_g, beam_idx_g] = arr[az_idx_g, beam_idx_g,
+                                              floor_ri[az_idx_g, beam_idx_g]]
 
     observations: List[Observation] = []
 
-    for a in range(_FWD_N_AZIMUTH):
-        az_offset = -_FWD_AZIMUTH_HALF_DEG + a * az_span / max(_FWD_N_AZIMUTH - 1, 1)
-        az_world  = math.radians(heading_deg + az_offset)
-        fwd_e     = math.sin(az_world)
-        fwd_n     = math.cos(az_world)
-        az_base   = a * _FWD_N_BEAMS * _FWD_N_RANGE
+    # Emit floor observations
+    if az_idx_g.size:
+        ri_f       = floor_ri[az_idx_g, beam_idx_g]
+        r_f        = (ri_f + 0.5) * _FWD_STEP_M
+        cos_t_f    = _FWD_BEAM_COS[beam_idx_g]
+        sin_t_f    = _FWD_BEAM_SIN[beam_idx_g]
+        ang_fac_f  = _FWD_BEAM_ANG_FAC[beam_idx_g]
+        east_f     = east_m  + r_f * fwd_e_az[az_idx_g] * cos_t_f
+        north_f    = north_m + r_f * fwd_n_az[az_idx_g] * cos_t_f
+        depth_f    = r_f * sin_t_f
+        amp_f      = floor_amp[az_idx_g, beam_idx_g]
+        conf_f     = np.minimum(0.45, (amp_f / 255.0) * 0.45 * ang_fac_f)
+        for k in range(az_idx_g.size):
+            observations.append(Observation(
+                ts=ts, east_m=float(east_f[k]),
+                north_m=float(north_f[k]),
+                depth_m=float(depth_f[k]),
+                confidence=round(float(conf_f[k]), 3),
+                heading_deg=heading_deg, speed_kts=speed_kts,
+                is_floor=True,
+            ))
 
-        for b in range(_FWD_N_BEAMS):
-            theta_deg = _FWD_BEAM_MIN_DEG + b * deg_span / max(_FWD_N_BEAMS - 1, 1)
-            if theta_deg < _FWD_MIN_DEP_DEG:
-                continue
+    # ── Fish detection: per-ray Python loop, restricted to rays with hits ────
+    # Build per-ray search_end (excludes bins behind floor + sigma).
+    search_end = np.where(floor_ri >= 0, floor_ri - _FWD_FLOOR_SIGMA, _FWD_N_RANGE)
+    search_end = np.maximum(0, search_end)                               # (AZ, BEAM)
 
-            theta = math.radians(theta_deg)
-            sin_t = math.sin(theta)
-            cos_t = math.cos(theta)
-            base  = az_base + b * _FWD_N_RANGE
+    # Quickly rule out rays whose entire searchable region is below threshold.
+    # We zero out bins beyond search_end then check if any ≥ FISH_THRESH remain.
+    ri_grid = np.arange(_FWD_N_RANGE, dtype=np.int64)[None, None, :]
+    in_search = ri_grid < search_end[..., None]
+    fish_candidate = (arr >= _FWD_FISH_THRESH) & in_search & _FWD_BEAM_VALID[None, :, None]
+    has_fish_ray   = fish_candidate.any(axis=2)                          # (AZ, BEAM)
+    fish_az, fish_beam = np.where(has_fish_ray)
 
-            angle_factor = (theta_deg - _FWD_MIN_DEP_DEG) / (_FWD_BEAM_MAX_DEG - _FWD_MIN_DEP_DEG)
-
-            # ── Find floor return ─────────────────────────────────────────────
-            expected_floor_ri = int((floor_depth_m / sin_t) / step_m)
-            floor_ri, floor_amp = -1, 0
-            for ri in range(_FWD_N_RANGE - 1, -1, -1):
-                amp = scan[base + ri]
-                if amp >= _FWD_FLOOR_THRESH:
-                    tolerance = max(12, int(expected_floor_ri * 0.35))
-                    if abs(ri - expected_floor_ri) <= tolerance:
-                        floor_amp = amp
-                        floor_ri  = ri
-                    break
-
-            if floor_ri >= 0:
-                r    = (floor_ri + 0.5) * step_m
-                conf = round(min(0.45, (floor_amp / 255.0) * 0.45 * angle_factor), 3)
+    half_thresh = _FWD_FISH_THRESH // 2
+    for k in range(fish_az.size):
+        a = int(fish_az[k]); b = int(fish_beam[k])
+        end = int(search_end[a, b])
+        ray = arr[a, b]
+        cos_t = _FWD_BEAM_COS[b]
+        sin_t = _FWD_BEAM_SIN[b]
+        fe    = float(fwd_e_az[a]); fn = float(fwd_n_az[a])
+        ri = 0
+        while ri < end:
+            amp = int(ray[ri])
+            if amp >= _FWD_FISH_THRESH:
+                peak_amp, peak_ri = amp, ri
+                j = ri + 1
+                while j < end and int(ray[j]) >= half_thresh:
+                    v = int(ray[j])
+                    if v > peak_amp:
+                        peak_amp = v
+                        peak_ri  = j
+                    j += 1
+                r    = (peak_ri + 0.5) * _FWD_STEP_M
+                conf = round(min(0.45, (peak_amp / 255.0) * 0.45), 3)
                 observations.append(Observation(
-                    ts=ts, east_m=east_m + r*fwd_e*cos_t,
-                    north_m=north_m + r*fwd_n*cos_t,
+                    ts=ts, east_m=east_m + r*fe*cos_t,
+                    north_m=north_m + r*fn*cos_t,
                     depth_m=r*sin_t, confidence=conf,
                     heading_deg=heading_deg, speed_kts=speed_kts,
-                    is_floor=True,
+                    is_floor=False,
                 ))
-
-            # ── Find fish returns above the floor ─────────────────────────────
-            search_end = max(0, floor_ri - _FWD_FLOOR_SIGMA) if floor_ri >= 0 else _FWD_N_RANGE
-            ri = 0
-            while ri < search_end:
-                amp = scan[base + ri]
-                if amp >= _FWD_FISH_THRESH:
-                    peak_amp, peak_ri = amp, ri
-                    j = ri + 1
-                    while j < search_end and scan[base + j] >= _FWD_FISH_THRESH // 2:
-                        if scan[base + j] > peak_amp:
-                            peak_amp = scan[base + j]
-                            peak_ri  = j
-                        j += 1
-                    r    = (peak_ri + 0.5) * step_m
-                    conf = round(min(0.45, (peak_amp / 255.0) * 0.45), 3)
-                    observations.append(Observation(
-                        ts=ts, east_m=east_m + r*fwd_e*cos_t,
-                        north_m=north_m + r*fwd_n*cos_t,
-                        depth_m=r*sin_t, confidence=conf,
-                        heading_deg=heading_deg, speed_kts=speed_kts,
-                        is_floor=False,
-                    ))
-                    ri = max(j, ri + 1)
-                else:
-                    ri += 1
+                ri = max(j, ri + 1)
+            else:
+                ri += 1
 
     return observations
 
@@ -300,6 +346,9 @@ class Fusion:
             gps.heading_deg, gps.ts, gps.speed_kts,
             floor_depth_m=depth,
         ) if sonar.forward_scan else []
+
+        if not _DEBUG:
+            return [bottom] + fish + fwd_obs
 
         print(f"[tick ts={gps.ts:7.2f}]  floor {depth:.2f} m  "
               f"E={e:7.1f} N={n_pos:7.1f}  hdg={gps.heading_deg:5.1f} deg  "

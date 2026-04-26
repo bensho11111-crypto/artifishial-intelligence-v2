@@ -38,19 +38,49 @@ class WorldState:
     because asyncio is single-threaded.
     """
 
+    # Geometric-growth buffer: amortises append from O(N) → O(1).
+    _INIT_CAP = 1024
+
     def __init__(self):
-        self._data: Optional[np.ndarray] = None            # shape (N, 8), float32
+        self._data: Optional[np.ndarray] = None            # logical view, shape (N, 8)
+        self._buf: Optional[np.ndarray]  = None            # backing buffer, shape (cap, 8)
+        self._n: int = 0                                   # logical row count
         self._echoes: list[tuple[float, bytes]] = []        # (ts, echo) floor obs
         self._fwd_scans: list[tuple[float, bytes]] = []     # (ts, scan) floor obs
 
     # ── mutation ─────────────────────────────────────────────────────────────
 
+    def _ensure_capacity(self, extra: int) -> None:
+        need = self._n + extra
+        if self._buf is None:
+            cap = max(self._INIT_CAP, extra)
+            self._buf = np.empty((cap, _NCOLS), dtype=np.float32)
+            return
+        if need <= self._buf.shape[0]:
+            return
+        new_cap = self._buf.shape[0]
+        while new_cap < need:
+            new_cap *= 2
+        new_buf = np.empty((new_cap, _NCOLS), dtype=np.float32)
+        new_buf[:self._n] = self._buf[:self._n]
+        self._buf = new_buf
+
+    def _refresh_view(self) -> None:
+        # _data is a zero-copy slice into the buffer up to the logical row count.
+        self._data = self._buf[:self._n] if self._buf is not None else None
+
     def add(self, obs: "Observation") -> None:
-        row = np.array([[obs.ts, obs.east_m, obs.north_m, obs.depth_m,
-                         obs.confidence, obs.heading_deg, obs.speed_kts,
-                         1.0 if obs.is_floor else 0.0]],
-                       dtype=np.float32)
-        self._data = row if self._data is None else np.vstack((self._data, row))
+        self._ensure_capacity(1)
+        self._buf[self._n, 0] = obs.ts
+        self._buf[self._n, 1] = obs.east_m
+        self._buf[self._n, 2] = obs.north_m
+        self._buf[self._n, 3] = obs.depth_m
+        self._buf[self._n, 4] = obs.confidence
+        self._buf[self._n, 5] = obs.heading_deg
+        self._buf[self._n, 6] = obs.speed_kts
+        self._buf[self._n, 7] = 1.0 if obs.is_floor else 0.0
+        self._n += 1
+        self._refresh_view()
         if obs.is_floor and obs.echo:
             self._echoes.append((obs.ts, obs.echo))
         if obs.is_floor and obs.forward_scan:
@@ -58,6 +88,8 @@ class WorldState:
 
     def reset(self) -> None:
         self._data = None
+        self._buf = None
+        self._n = 0
         self._echoes = []
         self._fwd_scans = []
 
