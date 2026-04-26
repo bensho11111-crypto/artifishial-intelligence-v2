@@ -29,7 +29,17 @@ GPS_HZ        = 1
 SONAR_HZ      = 5
 ECHO_SIZE     = 512
 MAX_RANGE_M   = 60.0
-_TAN_HALF     = math.tan(math.radians(10.0))
+# Beam half-angles differ by frequency: lower freq → wider beam for same aperture.
+# 83 kHz: ~12° half-angle;  200 kHz: ~6° half-angle (typical Lowrance/Garmin specs).
+_TAN_HALF_LF  = math.tan(math.radians(12.0))
+_TAN_HALF_HF  = math.tan(math.radians(6.0))
+
+# Two-way acoustic attenuation coefficients (Np/m).
+# Higher frequency → faster amplitude decay with depth.
+#   83 kHz  ≈ 0.026 dB/m  → 0.003 Np/m
+#  200 kHz  ≈ 0.070 dB/m  → 0.008 Np/m
+ALPHA_LF = 0.003   # 83 kHz
+ALPHA_HF = 0.008   # 200 kHz
 
 
 # ── Fish schools ──────────────────────────────────────────────────────────────
@@ -42,14 +52,18 @@ class FishSchool:
     radius_m: float
     density:  float
     species:  str
-    # Sinusoidal movement: position oscillates around the centre
-    amp_e:  float = 0.0   # east amplitude (m)
-    amp_n:  float = 0.0   # north amplitude (m)
-    freq:   float = 0.0   # angular frequency (rad/s)
-    phase:  float = 0.0   # phase offset (rad)
+    # Sinusoidal movement
+    amp_e:  float = 0.0
+    amp_n:  float = 0.0
+    freq:   float = 0.0
+    phase:  float = 0.0
+    # Acoustic properties (per-species, set by _make_schools)
+    ts_lf:  float = 0.70   # 83 kHz target strength scalar
+    ts_hf:  float = 0.70   # 200 kHz target strength scalar
+    n_fish: int   = 15     # individual fish count for arch simulation
+    shape:  str   = "sphere"  # "sphere" (pelagic) or "disk" (demersal)
 
     def at(self, t: float) -> "FishSchool":
-        """Return a copy of this school at time t (seconds from session start)."""
         from dataclasses import replace
         return replace(
             self,
@@ -58,7 +72,19 @@ class FishSchool:
         )
 
 
-SPECIES_TS = {"bass": 0.85, "trout": 0.70, "carp": 0.60, "bream": 0.50}
+# Per-species acoustic signatures.
+# The LF/HF ratio is the primary ML discriminant:
+#   physoclistous fish (bass, trout) have a resonant swimbladder that back-scatters
+#   strongly at low frequency → high LF/HF ratio.
+#   physostomous / small-swimbladder fish (carp, bream) scatter more uniformly
+#   across frequencies → low LF/HF ratio.
+SPECIES_ACOUSTICS = {
+    "bass":  {"ts_lf": 0.85, "ts_hf": 0.55, "n_fish": 25, "shape": "sphere"},
+    "trout": {"ts_lf": 0.72, "ts_hf": 0.62, "n_fish": 20, "shape": "sphere"},
+    "carp":  {"ts_lf": 0.33, "ts_hf": 0.58, "n_fish": 15, "shape": "disk"},
+    "bream": {"ts_lf": 0.45, "ts_hf": 0.70, "n_fish": 30, "shape": "disk"},
+}
+
 SPECIES_NAMES = {
     "bass":  "largemouth bass",
     "trout": "rainbow trout",
@@ -74,6 +100,14 @@ def _enu(lat, lon):
     return east, north
 
 
+def _school(species: str, east: float, north: float, depth: float,
+            radius: float, density: float, **kw) -> FishSchool:
+    ac = SPECIES_ACOUSTICS[species]
+    return FishSchool(east, north, depth, radius, density, species,
+                      ts_lf=ac["ts_lf"], ts_hf=ac["ts_hf"],
+                      n_fish=ac["n_fish"], shape=ac["shape"], **kw)
+
+
 def _make_schools(route_enu: List[Tuple[float,float]],
                   floor: FloorModel) -> List[FishSchool]:
     def pos(i): return route_enu[min(i, len(route_enu)-1)]
@@ -83,55 +117,107 @@ def _make_schools(route_enu: List[Tuple[float,float]],
     cy  = sum(p[1] for p in route_enu[mid-5:mid+5])/10
 
     return [
-        FishSchool(p60[0], p60[1], floor.depth_at(*p60)*0.55, 8.0, 0.9, "bass",
-                   amp_e=10.0, amp_n=8.0,  freq=0.048, phase=0.0),
-        FishSchool(p30[0], p30[1], floor.depth_at(*p30)*0.60, 6.0, 0.8, "trout",
-                   amp_e=12.0, amp_n=10.0, freq=0.071, phase=1.1),
-        FishSchool(cx-10, cy-8,    6.5,                       10.0, 0.55, "carp",
-                   amp_e=6.0,  amp_n=5.0,  freq=0.031, phase=2.3),
-        FishSchool(p5[0], p5[1],   floor.depth_at(*p5)*0.65,  5.0, 0.8, "bream",
-                   amp_e=8.0,  amp_n=9.0,  freq=0.059, phase=3.7),
+        _school("bass",  p60[0], p60[1], floor.depth_at(*p60)*0.55, 8.0, 0.9,
+                amp_e=10.0, amp_n=8.0,  freq=0.048, phase=0.0),
+        _school("trout", p30[0], p30[1], floor.depth_at(*p30)*0.60, 6.0, 0.8,
+                amp_e=12.0, amp_n=10.0, freq=0.071, phase=1.1),
+        _school("carp",  cx-10,  cy-8,   6.5,                       10.0, 0.55,
+                amp_e=6.0,  amp_n=5.0,  freq=0.031, phase=2.3),
+        _school("bream", p5[0],  p5[1],  floor.depth_at(*p5)*0.65,  5.0, 0.8,
+                amp_e=8.0,  amp_n=9.0,  freq=0.059, phase=3.7),
     ]
 
 
 # ── Echo synthesis ────────────────────────────────────────────────────────────
 
-def _make_echo(depth_m: float, schools: List[FishSchool],
-               boat_e: float, boat_n: float,
-               rng: random.Random = None) -> bytes:
-    n = ECHO_SIZE
-    echo = bytearray(n)
+def _fish_offsets(school: FishSchool) -> List[Tuple[float, float, float]]:
+    """
+    Deterministic individual fish positions (offsets from school centre).
+    Demersal species (disk shape) are spread wide and flat; pelagic (sphere)
+    fill a sphere.  The same school always produces the same offsets.
+    """
+    rng = random.Random(hash(school.species) ^ int(school.east_m * 10)
+                        ^ int(school.north_m * 10))
+    r        = school.radius_m
+    dz_scale = 0.25 if school.shape == "disk" else 1.0
+    offsets: List[Tuple[float, float, float]] = []
+    attempts = 0
+    while len(offsets) < school.n_fish and attempts < school.n_fish * 30:
+        attempts += 1
+        de = rng.uniform(-r, r)
+        dn = rng.uniform(-r, r)
+        dd = rng.uniform(-r * dz_scale, r * dz_scale)
+        if de*de + dn*dn + (dd / dz_scale)**2 <= r*r:
+            offsets.append((de, dn, dd))
+    return offsets
+
+
+def _make_echo_dual(depth_m: float, schools: List[FishSchool],
+                    boat_e: float, boat_n: float,
+                    rng: random.Random = None) -> Tuple[bytes, bytes]:
+    """
+    Return (echo_hf, echo_lf) — 200 kHz and 83 kHz channels.
+
+    Both channels share the same structure:
+      · Background noise
+      · Floor return with two-way depth attenuation (HF attenuates faster)
+      · Second harmonic (double-bounce)
+      · Individual fish returns at correct slant range → arch shape in waterfall
+
+    The LF/HF amplitude ratio is the primary species discriminant:
+      bass/trout (physoclistous swimbladder) → LF dominant  (ratio > 1)
+      carp/bream (physostomous / no resonance) → HF dominant (ratio < 1)
+    """
     rng  = rng or random.Random()
+    n    = ECHO_SIZE
 
-    for i in range(n):
-        echo[i] = rng.randint(2, 15)
+    def _channel(alpha: float, ts_attr: str, tan_half: float) -> bytes:
+        echo  = bytearray(rng.randint(2, 12) for _ in range(n))
+        sigma = max(3, int(n * 0.012))
 
-    def gauss(centre, amp, width):
-        for i in range(max(0, centre-width*4), min(n, centre+width*4+1)):
-            v = int(amp * math.exp(-0.5*((i-centre)/width)**2))
-            echo[i] = min(255, echo[i]+v)
+        def gauss(centre: int, amp: int, width: int) -> None:
+            for i in range(max(0, centre - width*4), min(n, centre + width*4 + 1)):
+                v = int(amp * math.exp(-0.5 * ((i - centre) / width) ** 2))
+                echo[i] = min(255, echo[i] + v)
 
-    fi = min(n-1, max(0, int(depth_m/MAX_RANGE_M*n)))
-    sigma = max(3, int(n*0.012))
-    gauss(fi, 215, sigma)
-    if fi*2 < n:
-        gauss(fi*2, 80, sigma+2)
+        # Two-way attenuation to the floor
+        floor_atten = math.exp(-2.0 * alpha * depth_m)
+        fi = min(n - 1, max(0, int(depth_m / MAX_RANGE_M * n)))
+        gauss(fi, int(215 * floor_atten), sigma)
+        if fi * 2 < n:
+            gauss(fi * 2, int(80 * floor_atten ** 2), sigma + 2)
 
-    for s in schools:
-        horiz = math.sqrt((s.east_m-boat_e)**2 + (s.north_m-boat_n)**2)
-        beam  = s.depth_m * _TAN_HALF
-        if horiz > beam + s.radius_m:
-            continue
-        overlap = min(1.0, max(0.0, (beam+s.radius_m-horiz)/s.radius_m))
-        slant = math.sqrt(horiz**2 + s.depth_m**2)
-        amp = int(s.density * overlap * 0.7 * SPECIES_TS.get(s.species, 0.65) * 220)
-        if amp < 1:
-            continue
-        fi2 = min(n-1, max(0, int(slant/MAX_RANGE_M*n)))
-        if fi2 < fi - sigma*2:
-            gauss(fi2, amp, 3)
+        # Individual fish returns with frequency-specific beam width.
+        # Wider beam (LF) sees more fish; narrower (HF) gives better
+        # angular resolution.  Beam taper attenuates off-axis targets.
+        for s in schools:
+            ts = getattr(s, ts_attr, 0.70)
+            for de, dn, dd in _fish_offsets(s):
+                fe = s.east_m  + de
+                fn = s.north_m + dn
+                fd = max(0.5, s.depth_m + dd)
 
-    return bytes(echo)
+                horiz = math.sqrt((fe - boat_e) ** 2 + (fn - boat_n) ** 2)
+                beam_radius = fd * tan_half
+                if horiz > beam_radius:
+                    continue
+
+                # Gaussian beam taper: targets at edge of beam return less signal
+                beam_taper  = math.exp(-0.5 * (horiz / max(beam_radius, 1e-6)) ** 2)
+                slant       = math.sqrt(horiz ** 2 + fd ** 2)
+                fish_atten  = math.exp(-2.0 * alpha * fd)
+                amp         = int(s.density * ts * fish_atten * beam_taper * 210)
+                if amp < 1:
+                    continue
+                fi2 = min(n - 1, max(0, int(slant / MAX_RANGE_M * n)))
+                if fi2 < fi - sigma * 2:
+                    gauss(fi2, amp, 2)
+
+        return bytes(echo)
+
+    echo_hf = _channel(ALPHA_HF, "ts_hf", _TAN_HALF_HF)
+    echo_lf = _channel(ALPHA_LF, "ts_lf", _TAN_HALF_LF)
+    return echo_hf, echo_lf
 
 
 # ── Boat physics ──────────────────────────────────────────────────────────────
@@ -192,6 +278,11 @@ class GeneratedSession:
                     "amp_n":    s.amp_n,
                     "freq":     s.freq,
                     "phase":    s.phase,
+                    "ts_lf":    s.ts_lf,
+                    "ts_hf":    s.ts_hf,
+                    "lf_hf_ratio": round(s.ts_lf / s.ts_hf, 3),
+                    "n_fish":   s.n_fish,
+                    "shape":    s.shape,
                 }
                 for s in self.fish_schools
             ],
@@ -270,10 +361,12 @@ def generate(duration_s: float = 120.0,
             if tick.gps is not None:
                 fwd_rng = random.Random(seed ^ (i * 3 + 1) & 0xFFFFFF)
                 fwd = _gen_fwd(be, bn, tick.gps.heading_deg, floor, schools_now, fwd_rng)
+            echo_hf, echo_lf = _make_echo_dual(sonar.depth_m, schools_now, be, bn, echo_rng)
             new_sonar = SonarTick(
                 ts=sonar.ts, depth_m=sonar.depth_m, temp_c=sonar.temp_c,
                 signal_db=sonar.signal_db,
-                echo=_make_echo(sonar.depth_m, schools_now, be, bn, echo_rng),
+                echo=echo_hf,
+                echo_lf=echo_lf,
                 forward_scan=fwd,
             )
             final_ticks.append(Tick(ts=tick.ts, sonar=new_sonar, gps=tick.gps))

@@ -233,7 +233,20 @@
       text-align: right;
     }
 
-    #ff-canvas {
+    .ff-ch-block {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      align-items: center;
+    }
+
+    .ff-ch-label {
+      font-size: 9px;
+      letter-spacing: 0.08em;
+      color: #4ae0c8;
+    }
+
+    #ff-canvas, #ff-lf-canvas {
       display: block;
       image-rendering: pixelated;
     }
@@ -309,9 +322,16 @@
   </div>
   <div id="ff-wrap">
     <div id="ff-axis"></div>
-    <canvas id="ff-canvas" width="280" height="360"></canvas>
+    <div class="ff-ch-block">
+      <span class="ff-ch-label">83 kHz</span>
+      <canvas id="ff-lf-canvas" width="136" height="360"></canvas>
+    </div>
+    <div class="ff-ch-block">
+      <span class="ff-ch-label">200 kHz</span>
+      <canvas id="ff-canvas" width="136" height="360"></canvas>
+    </div>
   </div>
-  <canvas id="ff-fwd-canvas" width="280" height="200" style="display:none;image-rendering:pixelated;"></canvas>
+  <canvas id="ff-fwd-canvas" width="280" height="188" style="display:none;"></canvas>
 </div>
 
 <!-- Ground truth panel -->
@@ -1248,11 +1268,13 @@ function _applyWASD() {
 // ─────────────────────────────────────────────────────────────────────────────
 //  Fish finder
 // ─────────────────────────────────────────────────────────────────────────────
-const ffPanel  = document.getElementById('ff-panel');
-const ffCanvas = document.getElementById('ff-canvas');
-const ffCtx    = ffCanvas.getContext('2d');
-const FF_W     = ffCanvas.width;
-const FF_H     = ffCanvas.height;
+const ffPanel    = document.getElementById('ff-panel');
+const ffCanvas   = document.getElementById('ff-canvas');   // 200 kHz (HF)
+const ffCtx      = ffCanvas.getContext('2d');
+const ffLfCanvas = document.getElementById('ff-lf-canvas'); // 83 kHz (LF)
+const ffLfCtx    = ffLfCanvas.getContext('2d');
+const FF_W       = ffCanvas.width;
+const FF_H       = ffCanvas.height;
 const FF_MAX_M = 60.0;   // must match generator MAX_RANGE_M
 const FF_ECHO_N = 512;   // must match ECHO_SIZE
 
@@ -1301,42 +1323,38 @@ const _ffLUT = new Uint8Array(256 * 3);
 function ffClear() {
   ffCtx.fillStyle = '#000';
   ffCtx.fillRect(0, 0, FF_W, FF_H);
+  ffLfCtx.fillStyle = '#000';
+  ffLfCtx.fillRect(0, 0, FF_W, FF_H);
   _ffLastTs = null;
 }
 ffClear();
 
-function ffDrawColumn(echoB64) {
-  // Decode base64 → Uint8Array
+function _ffScrollAndDraw(ctx, w, echoB64) {
   const bin   = atob(echoB64);
   const bytes = new Uint8Array(bin.length);
   for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-
-  // Shift canvas left by 1px
-  const img = ffCtx.getImageData(1, 0, FF_W - 1, FF_H);
-  ffCtx.putImageData(img, 0, 0);
-
-  // Draw new column on the right edge
-  const col = ffCtx.createImageData(1, FF_H);
+  const img = ctx.getImageData(1, 0, w - 1, FF_H);
+  ctx.putImageData(img, 0, 0);
+  const col = ctx.createImageData(1, FF_H);
   const d   = col.data;
   for (let py = 0; py < FF_H; py++) {
-    const echoIdx = Math.min(FF_ECHO_N - 1, (py / FF_H * FF_ECHO_N) | 0);
-    const amp     = bytes[echoIdx];
+    const amp = bytes[Math.min(FF_ECHO_N - 1, (py / FF_H * FF_ECHO_N) | 0)];
     d[py*4]   = _ffLUT[amp*3];
     d[py*4+1] = _ffLUT[amp*3+1];
     d[py*4+2] = _ffLUT[amp*3+2];
     d[py*4+3] = 255;
   }
-  ffCtx.putImageData(col, FF_W - 1, 0);
+  ctx.putImageData(col, w - 1, 0);
 }
 
 function ffHandleUpdate(msg) {
   if (!ffVisible) return;
-  // Detect seek: ts jumped backwards or by more than 2s
   if (_ffLastTs !== null && (msg.ts < _ffLastTs || msg.ts - _ffLastTs > 2.0)) {
     ffClear();
   }
   _ffLastTs = msg.ts;
-  if (msg.echo) ffDrawColumn(msg.echo);
+  if (msg.echo)    _ffScrollAndDraw(ffCtx,   FF_W, msg.echo);
+  if (msg.echo_lf) _ffScrollAndDraw(ffLfCtx, FF_W, msg.echo_lf);
 }
 
 document.getElementById('btn-ff').addEventListener('click', () => {
@@ -1348,50 +1366,23 @@ document.getElementById('btn-ff').addEventListener('click', () => {
 // ─────────────────────────────────────────────────────────────────────────────
 //  Forward-facing fish finder
 //  Must mirror constants in src/synthetic/forward_scan.py
+//  Output is now a Cartesian image (depth × forward) — no polar→Cartesian LUT.
 // ─────────────────────────────────────────────────────────────────────────────
-const FF_FWD_N_BEAMS    = 60;
-const FF_FWD_N_RANGE    = 128;
-const FF_FWD_MAX_RANGE  = 40.0;   // metres
-const FF_FWD_MIN_DEG    = 5.0;
-const FF_FWD_MAX_DEG    = 64.0;
-const FF_FWD_MAX_FWD_M  = 35.0;   // canvas x extent (forward metres)
-const FF_FWD_MAX_DEPTH_M = 22.0;  // canvas y extent (depth metres)
+const FF_FWD_N_FORWARD   = 120;   // pixels / columns (forward axis)
+const FF_FWD_N_DEPTH     = 80;    // pixels / rows    (depth axis)
+const FF_FWD_MAX_FWD_M   = 40.0;
+const FF_FWD_MAX_DEPTH_M = 25.0;
 
 const ffFwdCanvas = document.getElementById('ff-fwd-canvas');
 const ffFwdCtx    = ffFwdCanvas.getContext('2d');
 const FF_FWD_W    = ffFwdCanvas.width;
 const FF_FWD_H    = ffFwdCanvas.height;
 
-// Precompute pixel → (beam_idx, range_idx) lookup table
-// Each entry: [beam_idx (int16), range_idx (int16)], -1 = out of range
-const _fwdLUT = new Int16Array(FF_FWD_W * FF_FWD_H * 2).fill(-1);
-(function buildFwdLUT() {
-  for (let py = 0; py < FF_FWD_H; py++) {
-    for (let px = 0; px < FF_FWD_W; px++) {
-      const fwd_m   = (px / FF_FWD_W) * FF_FWD_MAX_FWD_M;
-      const depth_m = (py / FF_FWD_H) * FF_FWD_MAX_DEPTH_M;
-      const range_m = Math.sqrt(fwd_m * fwd_m + depth_m * depth_m);
-      const theta   = Math.atan2(depth_m, fwd_m) * 180 / Math.PI;
-      const b = Math.round((theta - FF_FWD_MIN_DEG) /
-                (FF_FWD_MAX_DEG - FF_FWD_MIN_DEG) * (FF_FWD_N_BEAMS - 1));
-      const r = Math.floor(range_m / FF_FWD_MAX_RANGE * FF_FWD_N_RANGE);
-      const i = (py * FF_FWD_W + px) * 2;
-      if (b >= 0 && b < FF_FWD_N_BEAMS && r >= 0 && r < FF_FWD_N_RANGE) {
-        _fwdLUT[i]   = b;
-        _fwdLUT[i+1] = r;
-      }
-    }
-  }
-})();
-
-// Range and depth grid lines drawn on top of each frame
 function _fwdDrawGrid() {
   ffFwdCtx.strokeStyle = 'rgba(74,224,200,0.18)';
   ffFwdCtx.lineWidth = 0.5;
   ffFwdCtx.font = '8px Courier New';
   ffFwdCtx.fillStyle = 'rgba(74,224,200,0.55)';
-
-  // Vertical range lines every 10m forward
   for (let fm = 10; fm < FF_FWD_MAX_FWD_M; fm += 10) {
     const px = fm / FF_FWD_MAX_FWD_M * FF_FWD_W;
     ffFwdCtx.beginPath();
@@ -1399,7 +1390,6 @@ function _fwdDrawGrid() {
     ffFwdCtx.stroke();
     ffFwdCtx.fillText(fm + 'm', px + 2, 10);
   }
-  // Horizontal depth lines every 5m
   for (let dm = 5; dm < FF_FWD_MAX_DEPTH_M; dm += 5) {
     const py = dm / FF_FWD_MAX_DEPTH_M * FF_FWD_H;
     ffFwdCtx.beginPath();
@@ -1414,28 +1404,26 @@ function ffDrawForward(fwdB64) {
   const bytes = new Uint8Array(bin.length);
   for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
 
-  const img = ffFwdCtx.createImageData(FF_FWD_W, FF_FWD_H);
-  const d   = img.data;
-
-  for (let py = 0; py < FF_FWD_H; py++) {
-    for (let px = 0; px < FF_FWD_W; px++) {
-      const li  = (py * FF_FWD_W + px) * 2;
-      const b   = _fwdLUT[li];
-      const r   = _fwdLUT[li + 1];
-      const pi  = (py * FF_FWD_W + px) * 4;
-      if (b < 0) {
-        d[pi] = d[pi+1] = d[pi+2] = 0; d[pi+3] = 255;
-        continue;
-      }
-      const amp = bytes[b * FF_FWD_N_RANGE + r];
+  // The image is already Cartesian (N_DEPTH rows × N_FORWARD cols).
+  // Scale it to the canvas size; each source pixel maps to a canvas region.
+  const src = ffFwdCtx.createImageData(FF_FWD_N_FORWARD, FF_FWD_N_DEPTH);
+  const d   = src.data;
+  for (let py = 0; py < FF_FWD_N_DEPTH; py++) {
+    for (let px = 0; px < FF_FWD_N_FORWARD; px++) {
+      const amp = bytes[py * FF_FWD_N_FORWARD + px];
+      const pi  = (py * FF_FWD_N_FORWARD + px) * 4;
       d[pi]   = _ffLUT[amp * 3];
       d[pi+1] = _ffLUT[amp * 3 + 1];
       d[pi+2] = _ffLUT[amp * 3 + 2];
       d[pi+3] = 255;
     }
   }
-
-  ffFwdCtx.putImageData(img, 0, 0);
+  // Draw at native resolution then scale via drawImage for smoothing
+  const tmp = document.createElement('canvas');
+  tmp.width = FF_FWD_N_FORWARD; tmp.height = FF_FWD_N_DEPTH;
+  tmp.getContext('2d').putImageData(src, 0, 0);
+  ffFwdCtx.imageSmoothingEnabled = false;
+  ffFwdCtx.drawImage(tmp, 0, 0, FF_FWD_W, FF_FWD_H);
   _fwdDrawGrid();
 }
 

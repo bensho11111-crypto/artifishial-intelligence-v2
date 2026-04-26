@@ -1,8 +1,6 @@
-import math
 import pytest
 from synthetic.forward_scan import (
-    generate, N_BEAMS, N_RANGE, MAX_RANGE_M,
-    BEAM_MIN_DEG, BEAM_MAX_DEG,
+    generate, N_FORWARD, N_DEPTH, MAX_FORWARD_M, MAX_DEPTH_M,
 )
 from synthetic.floor import FloorModel
 from synthetic.generator import FishSchool
@@ -15,7 +13,7 @@ def floor():
 
 def test_output_length(floor):
     scan = generate(0.0, 0.0, 0.0, floor, [])
-    assert len(scan) == N_BEAMS * N_RANGE
+    assert len(scan) == N_DEPTH * N_FORWARD
 
 
 def test_output_is_bytes(floor):
@@ -28,69 +26,76 @@ def test_all_values_in_byte_range(floor):
     assert all(0 <= b <= 255 for b in scan)
 
 
-def test_floor_return_in_expected_range(floor):
+def test_floor_return_present(floor):
     """
-    For steep beams (>45°) the floor return must appear at a range bin
-    consistent with the floor depth at the boat position.
+    A floor return must appear somewhere in the image (bright pixels at depth).
+    The floor at (0,0) is ~14m deep, which falls within MAX_DEPTH_M=25m,
+    so at least some beams should hit it.
     """
-    from processing.fusion import _FWD_FLOOR_THRESH
-    scan   = generate(0.0, 0.0, 0.0, floor, [])
-    step_m = MAX_RANGE_M / N_RANGE
+    scan = generate(0.0, 0.0, 0.0, floor, [])
+    # At least one pixel should be above the background noise level
+    max_amp = max(scan)
+    assert max_amp > 100, f"No strong returns found (max={max_amp})"
 
-    for b in range(N_BEAMS):
-        theta_deg = BEAM_MIN_DEG + b * (BEAM_MAX_DEG - BEAM_MIN_DEG) / (N_BEAMS - 1)
-        if theta_deg < 45:
-            continue  # shallow beams may not hit floor within scan range
-        theta     = math.radians(theta_deg)
-        sin_t     = math.sin(theta)
-        floor_d   = floor.depth_at(0.0, 0.0)
-        exp_range = floor_d / sin_t
-        if exp_range > MAX_RANGE_M:
-            continue
 
-        exp_ri = int(exp_range / step_m)
-        base   = b * N_RANGE
-        # Check a window of ±5 bins around expected position for a strong return
-        window = range(max(0, exp_ri - 5), min(N_RANGE, exp_ri + 6))
-        has_floor = any(scan[base + ri] >= _FWD_FLOOR_THRESH for ri in window)
-        assert has_floor, (
-            f"Beam {b} ({theta_deg:.0f}°): no floor return near expected ri={exp_ri} "
-            f"(floor_d={floor_d:.1f}m, exp_range={exp_range:.1f}m)"
-        )
+def test_floor_return_at_correct_depth(floor):
+    """
+    Floor returns must appear in the correct depth rows of the image.
+    Floor at (0,0) ≈ 14m deep; within MAX_DEPTH_M=25m → row ≈ 14/25*80 = 45.
+    """
+    scan = generate(0.0, 0.0, 0.0, floor, [])
+    floor_d = floor.depth_at(0.0, 0.0)
+    if floor_d > MAX_DEPTH_M:
+        pytest.skip("floor depth exceeds display range")
+
+    expected_row = int(floor_d / MAX_DEPTH_M * N_DEPTH)
+    # Search a ±10-row window for a strong return
+    window_rows = range(max(0, expected_row - 10), min(N_DEPTH, expected_row + 11))
+    max_in_window = max(
+        scan[r * N_FORWARD + c]
+        for r in window_rows
+        for c in range(N_FORWARD)
+    )
+    assert max_in_window > 80, (
+        f"No strong return near expected floor row {expected_row} "
+        f"(floor_d={floor_d:.1f}m, max_in_window={max_in_window})"
+    )
 
 
 def test_fish_school_increases_amplitude(floor):
-    """A fish school within beam range must raise amplitude above background."""
-    school    = FishSchool(5.0, 0.0, 4.0, 8.0, 0.9, "bass")
+    """A fish school within range must raise amplitude above background."""
+    school    = FishSchool(0.0, 5.0, 4.0, 8.0, 0.9, "bass")
     scan_base = generate(0.0, 0.0, 0.0, floor, [])
     scan_fish = generate(0.0, 0.0, 0.0, floor, [school])
-    # At least some bins must have higher amplitude with the school present
     increased = sum(1 for a, b in zip(scan_fish, scan_base) if a > b)
     assert increased > 0
 
 
-def test_floor_blocks_further_returns(floor):
+def test_lateral_fish_visible(floor):
     """
-    Once the floor is hit for a beam, no returns should appear at deeper range.
-    Verified: no bin after the first floor peak should have high amplitude.
+    A fish school to the side (not directly ahead) should still appear
+    in the image due to the horizontal azimuthal spread.
     """
-    from processing.fusion import _FWD_FLOOR_THRESH
-    scan = generate(0.0, 0.0, 0.0, floor, [])
+    # Place school 10m to the right of the heading direction
+    # heading=0 → north; right = east. School at east=10, north=5.
+    school_side = FishSchool(10.0, 5.0, 4.0, 8.0, 0.9, "bass")
+    school_fwd  = FishSchool( 0.0, 5.0, 4.0, 8.0, 0.9, "bass")
 
-    for b in range(N_BEAMS):
-        base      = b * N_RANGE
-        floor_hit = -1
-        for ri in range(N_RANGE):
-            if scan[base + ri] >= _FWD_FLOOR_THRESH:
-                floor_hit = ri
-                break
-        if floor_hit < 0:
-            continue
-        # Everything at range > floor_hit + a small spread should be noise
-        for ri in range(floor_hit + 8, N_RANGE):
-            assert scan[base + ri] < _FWD_FLOOR_THRESH, (
-                f"Beam {b}: high amplitude at ri={ri} after floor hit at {floor_hit}"
-            )
+    scan_side = generate(0.0, 0.0, 0.0, floor, [school_side])
+    scan_fwd  = generate(0.0, 0.0, 0.0, floor, [school_fwd])
+    scan_none = generate(0.0, 0.0, 0.0, floor, [])
+
+    # Lateral school should produce more signal than empty scan
+    diff_side = sum(max(0, a - b) for a, b in zip(scan_side, scan_none))
+    assert diff_side > 0, "Lateral school produced no extra signal (azimuthal spread missing)"
+
+
+def test_heading_affects_output(floor):
+    """Different headings should give different scans (floor topology varies)."""
+    s0   = generate(0.0, 0.0,   0.0, floor, [])
+    s90  = generate(0.0, 0.0,  90.0, floor, [])
+    s180 = generate(0.0, 0.0, 180.0, floor, [])
+    assert not (s0 == s90 == s180)
 
 
 def test_deterministic_with_same_rng(floor):
@@ -102,10 +107,12 @@ def test_deterministic_with_same_rng(floor):
     assert s1 == s2
 
 
-def test_heading_affects_output(floor):
-    """Different headings should give different scans (floor topology varies)."""
-    s0   = generate(0.0, 0.0,   0.0, floor, [])
-    s90  = generate(0.0, 0.0,  90.0, floor, [])
-    s180 = generate(0.0, 0.0, 180.0, floor, [])
-    # At least two must differ
-    assert not (s0 == s90 == s180)
+def test_image_has_volume_reverberation(floor):
+    """Near-surface rows should be brighter on average than deep rows (reverberation)."""
+    scan = generate(0.0, 0.0, 0.0, floor, [])
+    # Average amplitude in first 5 rows (near surface) vs last 5 rows (deep)
+    near_avg = sum(scan[r * N_FORWARD + c] for r in range(5) for c in range(N_FORWARD)) / (5 * N_FORWARD)
+    deep_avg = sum(scan[r * N_FORWARD + c] for r in range(N_DEPTH - 5, N_DEPTH) for c in range(N_FORWARD)) / (5 * N_FORWARD)
+    assert near_avg >= deep_avg, (
+        f"Surface noise ({near_avg:.1f}) should be >= deep noise ({deep_avg:.1f})"
+    )

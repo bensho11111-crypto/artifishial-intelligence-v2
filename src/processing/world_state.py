@@ -40,7 +40,8 @@ class WorldState:
 
     def __init__(self):
         self._data: Optional[np.ndarray] = None            # shape (N, 8), float32
-        self._echoes: list[tuple[float, bytes]] = []        # (ts, echo) floor obs
+        self._echoes: list[tuple[float, bytes]] = []        # (ts, echo_hf) floor obs
+        self._echoes_lf: list[tuple[float, bytes]] = []    # (ts, echo_lf) floor obs
         self._fwd_scans: list[tuple[float, bytes]] = []     # (ts, scan) floor obs
 
     # ── mutation ─────────────────────────────────────────────────────────────
@@ -53,12 +54,15 @@ class WorldState:
         self._data = row if self._data is None else np.vstack((self._data, row))
         if obs.is_floor and obs.echo:
             self._echoes.append((obs.ts, obs.echo))
+        if obs.is_floor and obs.echo_lf:
+            self._echoes_lf.append((obs.ts, obs.echo_lf))
         if obs.is_floor and obs.forward_scan:
             self._fwd_scans.append((obs.ts, obs.forward_scan))
 
     def reset(self) -> None:
         self._data = None
         self._echoes = []
+        self._echoes_lf = []
         self._fwd_scans = []
 
     # ── queries ───────────────────────────────────────────────────────────────
@@ -79,6 +83,14 @@ class WorldState:
         import bisect
         idx = bisect.bisect_right(self._echoes, (ts, b'\xff' * 512)) - 1
         return self._echoes[idx][1] if idx >= 0 else None
+
+    def echo_lf_at(self, ts: float) -> Optional[bytes]:
+        """Return the most recent 83 kHz floor echo at or before ts."""
+        if not self._echoes_lf:
+            return None
+        import bisect
+        idx = bisect.bisect_right(self._echoes_lf, (ts, b'\xff' * 512)) - 1
+        return self._echoes_lf[idx][1] if idx >= 0 else None
 
     def forward_scan_at(self, ts: float) -> Optional[bytes]:
         """Return the most recent forward scan frame at or before ts."""
