@@ -97,10 +97,11 @@ def _make_schools(route_enu: List[Tuple[float,float]],
 # ── Echo synthesis ────────────────────────────────────────────────────────────
 
 def _make_echo(depth_m: float, schools: List[FishSchool],
-               boat_e: float, boat_n: float) -> bytes:
+               boat_e: float, boat_n: float,
+               rng: random.Random = None) -> bytes:
     n = ECHO_SIZE
     echo = bytearray(n)
-    rng  = random.Random()
+    rng  = rng or random.Random()
 
     for i in range(n):
         echo[i] = rng.randint(2, 15)
@@ -263,15 +264,16 @@ def generate(duration_s: float = 120.0,
             # Compute school positions at this tick's time
             t_rel = tick.ts - session_start_ts
             schools_now = [s.at(t_rel) for s in schools]
-            # Forward scan only on GPS ticks (heading available)
+            # Deterministic per-tick rngs derived from the session seed
+            echo_rng = random.Random(seed ^ (i * 7) & 0xFFFFFF)
             fwd = None
             if tick.gps is not None:
-                fwd_rng = random.Random(seed ^ int(tick.ts * 1000) & 0xFFFFFF)
+                fwd_rng = random.Random(seed ^ (i * 3 + 1) & 0xFFFFFF)
                 fwd = _gen_fwd(be, bn, tick.gps.heading_deg, floor, schools_now, fwd_rng)
             new_sonar = SonarTick(
                 ts=sonar.ts, depth_m=sonar.depth_m, temp_c=sonar.temp_c,
                 signal_db=sonar.signal_db,
-                echo=_make_echo(sonar.depth_m, schools_now, be, bn),
+                echo=_make_echo(sonar.depth_m, schools_now, be, bn, echo_rng),
                 forward_scan=fwd,
             )
             final_ticks.append(Tick(ts=tick.ts, sonar=new_sonar, gps=tick.gps))
