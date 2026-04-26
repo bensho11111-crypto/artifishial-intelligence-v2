@@ -104,10 +104,6 @@ def _build_update(current_ts: Optional[float] = None) -> dict:
     if echo:
         payload["echo"] = base64.b64encode(echo).decode("ascii")
 
-    echo_lf = _world_state.echo_lf_at(ts) if ts is not None else None
-    if echo_lf:
-        payload["echo_lf"] = base64.b64encode(echo_lf).decode("ascii")
-
     if _ground_truth is not None and ts is not None:
         payload["fish_positions"] = [
             {
