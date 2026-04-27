@@ -150,9 +150,8 @@ def main():
         t1 = time.perf_counter()
         timings["state_at"] = t1 - t0
 
-        pc = view.to_pointcloud(floor_only=False, current_ts=ts)
-        for k in ("ts", "heading", "speed_kts"):
-            pc.pop(k, None)
+        from rendering.pointcloud import build_pointcloud_arrays
+        pc = build_pointcloud_arrays(view, current_ts=ts)
         t2 = time.perf_counter()
         timings["to_pointcloud"] = t2 - t1
 
@@ -172,7 +171,7 @@ def main():
         floor_n = int((view._data[:, 7] > 0.5).sum()) if view._data is not None else 0
         send_mesh = None
         if sim_wall - last_mesh_wall >= 2.0 and floor_n != last_floor_n:
-            cached_mesh = view.to_mesh(min_points=4)
+            cached_mesh = view.to_mesh(min_points=4, as_arrays=True)
             last_floor_n = floor_n
             last_mesh_wall = sim_wall
             send_mesh = cached_mesh

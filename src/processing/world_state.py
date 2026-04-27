@@ -176,13 +176,18 @@ class WorldState:
             "is_floor":   (d[:, _IS_FLOOR] > 0.5).tolist(),
         }
 
-    def to_mesh(self, min_points: int = 4) -> Optional[dict]:
+    def to_mesh(self, min_points: int = 4,
+                as_arrays: bool = False) -> Optional[dict]:
         """
         Build a Delaunay triangulation mesh from the observation positions.
         Returns None if there are too few points.
 
         Much cheaper than marching cubes on a voxel grid — for typical
         sessions (<10 000 points) this runs in <50 ms.
+
+        as_arrays=True returns contiguous numpy arrays instead of nested
+        Python lists. Used by the WS fast path so orjson can encode the
+        arrays directly (smaller JSON, no float32→float64 hop).
         """
         if self._data is None or len(self._data) < min_points:
             return None
@@ -202,11 +207,21 @@ class WorldState:
         depths = data[:, _DEPTH]
 
         tri   = Delaunay(pts)
-        verts = np.column_stack([pts, -depths])   # Z = -depth (Z-up scene)
+        # column_stack may return a non-C-contiguous array; force contiguous
+        # so orjson's numpy fast-path can serialise it without a fallback.
+        verts = np.ascontiguousarray(
+            np.column_stack([pts, -depths]).astype(np.float32, copy=False))
+        faces = np.ascontiguousarray(tri.simplices, dtype=np.int32)
 
+        if as_arrays:
+            return {
+                "vertices": verts,
+                "faces":    faces,
+                "depth":    np.ascontiguousarray(depths),
+            }
         return {
             "vertices": verts.tolist(),
-            "faces":    tri.simplices.tolist(),
+            "faces":    faces.tolist(),
             "depth":    depths.tolist(),
         }
 

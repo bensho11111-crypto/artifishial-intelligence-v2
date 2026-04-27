@@ -11,7 +11,7 @@ WebSocket /ws/state sends map_update messages every 100ms:
     "paused": bool,
     "pointcloud": { "x": [...], "y": [...], "depth": [...], ... },
     "boat": { "east": ..., "north": ..., "heading": ..., "speed_kts": ... },
-    "mesh": { "vertices": [...], "faces": [...] } | null  (every 5s)
+    "mesh": { "vertices": [...], "faces": [...] } | null  (every 2s, when changed)
   }
 
 Inbound WS commands:
@@ -105,15 +105,16 @@ def _maybe_build_mesh(view) -> Optional[dict]:
     floor_n = _floor_count(view)
     if floor_n == _mesh_cache_floor_n:
         return None
-    # call view.to_mesh() directly — view is already sliced.
-    mesh = view.to_mesh(min_points=4)
+    # as_arrays=True: numpy arrays, encoded directly by orjson (smaller +
+    # faster than going through .tolist()).
+    mesh = view.to_mesh(min_points=4, as_arrays=True)
     _mesh_cache = mesh
     _mesh_cache_floor_n = floor_n
     return mesh
 
 
 def _build_update(current_ts: Optional[float] = None) -> dict:
-    from rendering.pointcloud import build_pointcloud_payload, extract_boat
+    from rendering.pointcloud import build_pointcloud_arrays, extract_boat
 
     if _world_state is None:
         return {"type": "map_update", "pointcloud": {}, "boat": {}}
@@ -123,11 +124,10 @@ def _build_update(current_ts: Optional[float] = None) -> dict:
     # Slice once and reuse the view for both pointcloud and boat lookups.
     view = _world_state.state_at(ts) if ts is not None else _world_state
 
-    pc   = view.to_pointcloud(floor_only=False, current_ts=ts)
-    # Strip per-point fields the frontend ignores — saves ~3 numeric arrays
-    # of N floats each in the JSON payload.
-    for k in ("ts", "heading", "speed_kts"):
-        pc.pop(k, None)
+    # Numpy-array fast path: orjson encodes float32 ndarrays directly,
+    # avoiding the float32→float64 promotion in tolist() that doubled
+    # JSON byte size with long-form double formatting.
+    pc = build_pointcloud_arrays(view, current_ts=ts)
 
     boat = extract_boat(view)
 

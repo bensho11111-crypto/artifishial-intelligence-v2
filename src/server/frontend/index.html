@@ -685,7 +685,7 @@ function updatePointCloud(pc) {
   let frameMaxD = 1, depthSum = 0;
   for (let i = 0; i < n; i++) {
     depthSum += depth[i];
-    if (isFloor[i] !== false) {
+    if (isFloor[i]) {
       const d = depth[i];
       if (d > frameMaxD) frameMaxD = d;
     }
@@ -713,7 +713,7 @@ function updatePointCloud(pc) {
   // Colour the appropriate range.
   for (let i = start; i < n; i++) {
     const i3 = i * 3;
-    if (isFloor[i] === false) {
+    if (!isFloor[i]) {
       // Fish echo — orange, dimmed by decayed confidence
       let cv = (conf[i] || 0) * (1 / 0.65);
       if (cv > 1) cv = 1; else if (cv < 0) cv = 0;
