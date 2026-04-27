@@ -101,8 +101,12 @@ _FWD_BEAM_MAX_DEG = 64.0
 _FWD_MIN_DEP_DEG  = 15.0   # ignore beams shallower than this — poor depth accuracy
 _FWD_N_AZIMUTH    = 24
 _FWD_AZIMUTH_HALF_DEG = 30.0
-# Floor returns: 185 ± 20 → min 165.  Fish returns: density*160 + 10 → max 154.
-# Threshold of 155 cleanly separates the two without overlapping either range.
+# Floor centre bin: bg(2..12) + floor_amp(165..205) = 167..217. Fish
+# bins can reach ~170 (density·160 + jitter≤10 + bg≤12), so amplitude
+# alone CANNOT cleanly separate them. We keep the threshold low (155)
+# so legitimate floor centre bins are never missed, and rely on the
+# geometric gate (expected_ri < N_RANGE) plus the tolerance check to
+# reject bright fish bins in beams that can't physically reach the floor.
 _FWD_FLOOR_THRESH = 155
 _FWD_FISH_THRESH  = 50     # amplitude threshold for mid-water (fish) returns
 # Floor Gaussian sigma in forward_scan.py is 1.5 bins; tail at sigma*3≈5 bins
@@ -157,9 +161,23 @@ def _parse_forward_returns(scan: bytes, east_m: float, north_m: float,
     expected  = (floor_depth_m / safe_sin) / _FWD_STEP_M                 # (1, BEAM)
     expected_ri = expected.astype(np.int64)
     expected_ri = np.broadcast_to(expected_ri, floor_ri.shape)
-    tolerance = np.maximum(12, (expected_ri * 0.35).astype(np.int64))
+    # Was 0.35; the wide window let fish at ~70% of the expected floor
+    # range slip through on 21-23° beams. Tighten the proportional term
+    # but cap the absolute ceiling at 25 bins (~7.8 m range) so floor
+    # variation across the cone footprint still passes for legitimate
+    # surface returns.
+    tolerance = np.minimum(
+        25, np.maximum(12, (expected_ri * 0.35).astype(np.int64)))
     in_tol    = np.abs(floor_ri - expected_ri) <= tolerance
-    keep_floor = (floor_ri >= 0) & in_tol & _FWD_BEAM_VALID[None, :]
+    # Geometric gate: a beam pointing only slightly downward can't reach
+    # the floor within N_RANGE bins, so any bright bin in that beam must
+    # be a fish that crossed the amplitude threshold — never a real floor
+    # return. Without this, dense fish in 17–22° beams pass the tolerance
+    # gate (because expected_ri lands close to the scan-end ri after int
+    # truncation) and get tagged is_floor=True 3–5 m above the seafloor.
+    floor_in_beam = expected_ri < _FWD_N_RANGE                            # (1, BEAM)
+    keep_floor = ((floor_ri >= 0) & in_tol
+                  & _FWD_BEAM_VALID[None, :] & floor_in_beam)
     # When candidate exists but fails tolerance, scalar version sets floor_ri=-1
     floor_ri = np.where(keep_floor, floor_ri, -1)
 
