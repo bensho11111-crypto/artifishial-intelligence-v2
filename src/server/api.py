@@ -34,9 +34,15 @@ import time
 from pathlib import Path
 from typing import Optional
 
+import orjson
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+
+
+def _dumps(obj) -> str:
+    """orjson-backed JSON encoder. ~5-10x faster than stdlib for our payloads."""
+    return orjson.dumps(obj, option=orjson.OPT_SERIALIZE_NUMPY).decode("utf-8")
 
 app = FastAPI(title="Artifishial Intelligence v3.3 (cone+perf+fe)")
 
@@ -73,6 +79,38 @@ class _Manager:
 _manager = _Manager()
 _last_mesh_ts: float = 0.0
 
+# Mesh cache — only rebuild + resend when the floor-point set has grown.
+# Delaunay over 100k+ points takes hundreds of ms; this collapses cost in
+# steady state to a near-free floor-count probe.
+_mesh_cache: Optional[dict] = None
+_mesh_cache_floor_n: int = -1
+
+
+def _floor_count(view) -> int:
+    """Count of floor observations in a (possibly sliced) WorldState view."""
+    d = view._data
+    if d is None or len(d) == 0:
+        return 0
+    return int((d[:, 7] > 0.5).sum())  # _IS_FLOOR == 7
+
+
+def _maybe_build_mesh(view) -> Optional[dict]:
+    """
+    Rebuild the mesh only when the floor-point count differs from the
+    cached value. Returns:
+      - mesh dict if a fresh mesh was built (caller should send it)
+      - None if cached mesh is still valid (caller should skip sending)
+    """
+    global _mesh_cache, _mesh_cache_floor_n
+    floor_n = _floor_count(view)
+    if floor_n == _mesh_cache_floor_n:
+        return None
+    # call view.to_mesh() directly — view is already sliced.
+    mesh = view.to_mesh(min_points=4)
+    _mesh_cache = mesh
+    _mesh_cache_floor_n = floor_n
+    return mesh
+
 
 def _build_update(current_ts: Optional[float] = None) -> dict:
     from rendering.pointcloud import build_pointcloud_payload, extract_boat
@@ -80,9 +118,18 @@ def _build_update(current_ts: Optional[float] = None) -> dict:
     if _world_state is None:
         return {"type": "map_update", "pointcloud": {}, "boat": {}}
 
-    ts   = current_ts if current_ts is not None else _world_state.latest_ts()
-    pc   = build_pointcloud_payload(_world_state, current_ts)
-    boat = extract_boat(_world_state.state_at(ts) if ts is not None else _world_state)
+    ts = current_ts if current_ts is not None else _world_state.latest_ts()
+
+    # Slice once and reuse the view for both pointcloud and boat lookups.
+    view = _world_state.state_at(ts) if ts is not None else _world_state
+
+    pc   = view.to_pointcloud(floor_only=False, current_ts=ts)
+    # Strip per-point fields the frontend ignores — saves ~3 numeric arrays
+    # of N floats each in the JSON payload.
+    for k in ("ts", "heading", "speed_kts"):
+        pc.pop(k, None)
+
+    boat = extract_boat(view)
 
     payload: dict = {
         "type":       "map_update",
@@ -120,6 +167,7 @@ def _build_update(current_ts: Optional[float] = None) -> dict:
     if fwd:
         payload["forward_scan"] = base64.b64encode(fwd).decode("ascii")
 
+    payload["_view"] = view  # internal: passed to mesh stage, stripped before send
     return payload
 
 
@@ -143,14 +191,14 @@ async def ws_state(ws: WebSocket):
     await _manager.connect(ws)
 
     # Send session info immediately
-    await ws.send_text(json.dumps({
+    await ws.send_text(_dumps({
         "type":             "session_info",
         "duration_s":       _duration_s,
         "has_ground_truth": _ground_truth is not None,
     }))
 
     if _ground_truth is not None:
-        await ws.send_text(json.dumps({
+        await ws.send_text(_dumps({
             "type": "ground_truth",
             "data": {
                 "fish_schools": _ground_truth.fish_schools,
@@ -158,34 +206,53 @@ async def ws_state(ws: WebSocket):
             },
         }))
 
-    try:
-        while True:
-            # Non-blocking receive — drain any inbound command
-            try:
-                data = await asyncio.wait_for(ws.receive_text(), timeout=0.05)
-                await _dispatch(json.loads(data))
-            except asyncio.TimeoutError:
-                pass
+    # Drain inbound commands on a separate task so the send loop never
+    # pays a per-iteration receive timeout (was ~50ms wasted per frame).
+    async def _recv_loop():
+        try:
+            while True:
+                data = await ws.receive_text()
+                try:
+                    await _dispatch(json.loads(data))
+                except Exception:
+                    pass
+        except WebSocketDisconnect:
+            pass
 
-            now = time.time()
+    recv_task = asyncio.create_task(_recv_loop())
+
+    try:
+        last_tick = time.monotonic()
+        while True:
             ts  = _replay_ctrl.position_s if _replay_ctrl is not None else None
             payload = _build_update(ts)
+            view    = payload.pop("_view", None)
 
-            # Include mesh every 5 seconds
-            if now - _last_mesh_ts >= 0.5 and _world_state is not None:
-                from rendering.mesh import build_mesh
-                mesh = build_mesh(_world_state, ts)
+            # Mesh: throttle to every 2s AND skip when floor-count unchanged.
+            now = time.time()
+            if (view is not None
+                    and now - _last_mesh_ts >= 2.0
+                    and _world_state is not None):
+                mesh = _maybe_build_mesh(view)
                 if mesh is not None:
                     payload["mesh"] = mesh
                 _last_mesh_ts = now
 
-            await ws.send_text(json.dumps(payload))
+            await ws.send_text(_dumps(payload))
             await asyncio.sleep(0.1)
+
+            # Advance replay clock by ACTUAL elapsed wall-clock time,
+            # not a hardcoded 0.1s. Without this the displayed time falls
+            # further behind real time as iteration cost grows.
+            new_tick = time.monotonic()
             if _replay_ctrl is not None:
-                _replay_ctrl.advance(0.1)
+                _replay_ctrl.advance(new_tick - last_tick)
+            last_tick = new_tick
 
     except WebSocketDisconnect:
         _manager.disconnect(ws)
+    finally:
+        recv_task.cancel()
 
 
 # ── REST endpoints ────────────────────────────────────────────────────────────

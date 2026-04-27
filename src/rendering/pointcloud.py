@@ -9,6 +9,9 @@ from typing import Optional, TYPE_CHECKING
 if TYPE_CHECKING:
     from processing.world_state import WorldState
 
+# Mirrors WorldState column indices.
+_TS, _EAST, _NORTH, _DEPTH, _CONF, _HDG, _SPD, _IS_FLOOR = range(8)
+
 
 def build_pointcloud_payload(state: "WorldState",
                               current_ts: Optional[float] = None) -> dict:
@@ -24,14 +27,25 @@ def build_pointcloud_payload(state: "WorldState",
 
 
 def extract_boat(state: "WorldState") -> dict:
-    """Return the most recent boat position from the state."""
-    # Use floor-only for boat position — fish echoes are not the boat location.
-    pc = state.to_pointcloud(floor_only=True)
-    if not pc["x"]:
+    """Return the most recent boat position from the state.
+
+    Fast path: read the last floor row directly from the numpy buffer
+    rather than materialising a full floor-only pointcloud.
+    """
+    data = state._data
+    if data is None or len(data) == 0:
         return {}
+
+    floor_mask = data[:, _IS_FLOOR] > 0.5
+    if not floor_mask.any():
+        return {}
+
+    # nonzero()[0] gives indices of True; take the last one.
+    last_idx = int(floor_mask.nonzero()[0][-1])
+    row = data[last_idx]
     return {
-        "east":      round(pc["x"][-1], 2),
-        "north":     round(pc["y"][-1], 2),
-        "heading":   round(pc["heading"][-1], 1),
-        "speed_kts": round(pc["speed_kts"][-1], 1),
+        "east":      round(float(row[_EAST]),  2),
+        "north":     round(float(row[_NORTH]), 2),
+        "heading":   round(float(row[_HDG]),   1),
+        "speed_kts": round(float(row[_SPD]),   1),
     }
