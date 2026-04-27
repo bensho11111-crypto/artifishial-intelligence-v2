@@ -148,38 +148,35 @@ def _parse_forward_returns(scan: bytes, east_m: float, north_m: float,
     fwd_e_az     = np.sin(az_world_rad)                                  # (AZ,)
     fwd_n_az     = np.cos(az_world_rad)
 
-    # ── Floor detection: largest ri where amp >= FLOOR_THRESH ────────────────
+    # ── Floor candidate: largest ri where amp >= FLOOR_THRESH ───────────────
+    # We separate "candidate" from "accepted floor". The candidate marks
+    # where bright returns end on each ray; even if we don't EMIT a floor
+    # observation for it (because gates reject it), we must still EXCLUDE
+    # that region from fish search — otherwise the floor return itself
+    # would be picked up as a fish below the seafloor.
     mask = arr >= _FWD_FLOOR_THRESH                                      # (AZ, BEAM, RANGE)
-    has_floor = mask.any(axis=2)                                         # (AZ, BEAM)
-    # argmax on reversed range → distance from end of last True; subtract for index
+    has_candidate = mask.any(axis=2)                                     # (AZ, BEAM)
     last_true = (_FWD_N_RANGE - 1) - mask[:, :, ::-1].argmax(axis=2)     # (AZ, BEAM)
-    floor_ri  = np.where(has_floor, last_true, -1)                        # (AZ, BEAM)
+    candidate_ri = np.where(has_candidate, last_true, -1)                # (AZ, BEAM)
 
-    # Tolerance gate (must match scalar version exactly)
+    # Expected floor range bin from the down-sonar floor depth + beam geometry
     sin_t_b   = _FWD_BEAM_SIN[None, :]                                   # (1, BEAM)
     safe_sin  = np.where(sin_t_b > 0, sin_t_b, 1.0)
     expected  = (floor_depth_m / safe_sin) / _FWD_STEP_M                 # (1, BEAM)
     expected_ri = expected.astype(np.int64)
-    expected_ri = np.broadcast_to(expected_ri, floor_ri.shape)
-    # Was 0.35; the wide window let fish at ~70% of the expected floor
-    # range slip through on 21-23° beams. Tighten the proportional term
-    # but cap the absolute ceiling at 25 bins (~7.8 m range) so floor
-    # variation across the cone footprint still passes for legitimate
-    # surface returns.
+    expected_ri = np.broadcast_to(expected_ri, candidate_ri.shape)
+    # Tolerance: capped at 25 bins absolute. Wider windows let dense
+    # fish at ri ≈ 0.7·expected slip through the gate on 21-23° beams.
     tolerance = np.minimum(
         25, np.maximum(12, (expected_ri * 0.35).astype(np.int64)))
-    in_tol    = np.abs(floor_ri - expected_ri) <= tolerance
-    # Geometric gate: a beam pointing only slightly downward can't reach
-    # the floor within N_RANGE bins, so any bright bin in that beam must
-    # be a fish that crossed the amplitude threshold — never a real floor
-    # return. Without this, dense fish in 17–22° beams pass the tolerance
-    # gate (because expected_ri lands close to the scan-end ri after int
-    # truncation) and get tagged is_floor=True 3–5 m above the seafloor.
-    floor_in_beam = expected_ri < _FWD_N_RANGE                            # (1, BEAM)
-    keep_floor = ((floor_ri >= 0) & in_tol
+    in_tol    = np.abs(candidate_ri - expected_ri) <= tolerance
+    # Geometric gate: beams pointing only slightly downward can't reach
+    # the floor within N_RANGE bins, so a bright bin in that beam can't
+    # be a real floor return.
+    floor_in_beam = expected_ri < _FWD_N_RANGE                           # (1, BEAM)
+    keep_floor = ((candidate_ri >= 0) & in_tol
                   & _FWD_BEAM_VALID[None, :] & floor_in_beam)
-    # When candidate exists but fails tolerance, scalar version sets floor_ri=-1
-    floor_ri = np.where(keep_floor, floor_ri, -1)
+    floor_ri = np.where(keep_floor, candidate_ri, -1)
 
     floor_amp = np.zeros(floor_ri.shape, dtype=np.uint8)
     az_idx_g, beam_idx_g = np.where(keep_floor)
@@ -212,8 +209,23 @@ def _parse_forward_returns(scan: bytes, east_m: float, north_m: float,
             ))
 
     # ── Fish detection: per-ray Python loop, restricted to rays with hits ────
-    # Build per-ray search_end (excludes bins behind floor + sigma).
-    search_end = np.where(floor_ri >= 0, floor_ri - _FWD_FLOOR_SIGMA, _FWD_N_RANGE)
+    # search_end bounds where fish can exist: above the floor by at least
+    # _FWD_FLOOR_SIGMA bins. Three sources of cap, take the smallest:
+    #
+    #   1. The bright candidate ri (regardless of whether we emitted a
+    #      floor obs for it) — ensures we never treat the floor return
+    #      itself as a fish when our gates rejected the candidate.
+    #   2. The expected floor ri from the down-sonar depth — covers rays
+    #      where no bright candidate was found (floor was too dim).
+    #   3. N_RANGE — fallback for shallow beams where the floor isn't
+    #      reachable; depth filter on the emitted obs handles the rest.
+    end_from_candidate = np.where(has_candidate,
+                                   candidate_ri - _FWD_FLOOR_SIGMA,
+                                   _FWD_N_RANGE)
+    end_from_expected  = np.where(floor_in_beam,
+                                   expected_ri - _FWD_FLOOR_SIGMA,
+                                   _FWD_N_RANGE)
+    search_end = np.minimum(end_from_candidate, end_from_expected)
     search_end = np.maximum(0, search_end)                               # (AZ, BEAM)
 
     # Quickly rule out rays whose entire searchable region is below threshold.
@@ -225,6 +237,10 @@ def _parse_forward_returns(scan: bytes, east_m: float, north_m: float,
     fish_az, fish_beam = np.where(has_fish_ray)
 
     half_thresh = _FWD_FISH_THRESH // 2
+    # Final depth gate: regardless of where the per-beam search ended,
+    # a fish observation at or below the down-sonar floor depth is
+    # physically impossible. Use a 1 m margin to account for floor slope.
+    max_fish_depth = floor_depth_m - 1.0
     for k in range(fish_az.size):
         a = int(fish_az[k]); b = int(fish_beam[k])
         end = int(search_end[a, b])
@@ -244,15 +260,17 @@ def _parse_forward_returns(scan: bytes, east_m: float, north_m: float,
                         peak_amp = v
                         peak_ri  = j
                     j += 1
-                r    = (peak_ri + 0.5) * _FWD_STEP_M
-                conf = round(min(0.45, (peak_amp / 255.0) * 0.45), 3)
-                observations.append(Observation(
-                    ts=ts, east_m=east_m + r*fe*cos_t,
-                    north_m=north_m + r*fn*cos_t,
-                    depth_m=r*sin_t, confidence=conf,
-                    heading_deg=heading_deg, speed_kts=speed_kts,
-                    is_floor=False,
-                ))
+                r          = (peak_ri + 0.5) * _FWD_STEP_M
+                fish_depth = r * sin_t
+                if fish_depth < max_fish_depth:
+                    conf = round(min(0.45, (peak_amp / 255.0) * 0.45), 3)
+                    observations.append(Observation(
+                        ts=ts, east_m=east_m + r*fe*cos_t,
+                        north_m=north_m + r*fn*cos_t,
+                        depth_m=fish_depth, confidence=conf,
+                        heading_deg=heading_deg, speed_kts=speed_kts,
+                        is_floor=False,
+                    ))
                 ri = max(j, ri + 1)
             else:
                 ri += 1
