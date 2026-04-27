@@ -137,10 +137,11 @@ def main():
     print(header)
     print("-" * len(header))
 
-    last_floor_n = -1
+    last_floor_n_mesh = -1
     last_mesh_wall = -1e9
     cached_mesh = None
     sim_wall = 0.0
+    client_floor_n = 0   # mirrors what the client has buffered
     for i in range(args.steps + 1):
         ts = (i / args.steps) * args.duration
         timings = {s: 0.0 for s in stages}
@@ -150,8 +151,10 @@ def main():
         t1 = time.perf_counter()
         timings["state_at"] = t1 - t0
 
-        from rendering.pointcloud import build_pointcloud_arrays
-        pc = build_pointcloud_arrays(view, current_ts=ts)
+        from rendering.pointcloud import build_pointcloud_delta
+        pc = build_pointcloud_delta(view, current_ts=ts,
+                                    last_floor_n=client_floor_n)
+        client_floor_n = pc["floor_total"]
         t2 = time.perf_counter()
         timings["to_pointcloud"] = t2 - t1
 
@@ -170,9 +173,9 @@ def main():
         # Mesh: throttle to 2s + only rebuild if floor_n changed
         floor_n = int((view._data[:, 7] > 0.5).sum()) if view._data is not None else 0
         send_mesh = None
-        if sim_wall - last_mesh_wall >= 2.0 and floor_n != last_floor_n:
+        if sim_wall - last_mesh_wall >= 2.0 and floor_n != last_floor_n_mesh:
             cached_mesh = view.to_mesh(min_points=4, as_arrays=True)
-            last_floor_n = floor_n
+            last_floor_n_mesh = floor_n
             last_mesh_wall = sim_wall
             send_mesh = cached_mesh
         t6 = time.perf_counter()
@@ -199,13 +202,15 @@ def main():
 
         sim_wall += timings["TOTAL"] + 0.1   # +0.1 for the asyncio.sleep
 
-        n = len(pc.get("x", []))
+        # In delta mode, "npts" = floor delta + fish (what's actually sent).
+        n = len(pc["floor"]["x"]) + len(pc["fish"]["x"])
         row = f"{ts:6.1f}  {n:5d}  " + "  ".join(
             f"{timings[s]*1000:11.2f} ms" for s in stages)
         print(row)
 
     print(f"\nOptimized final payload size: {len(s)/1024:.1f} KiB "
           f"(mesh sent this frame: {'yes' if send_mesh is not None else 'no'})")
+    print(f"Client buffered floor count: {client_floor_n}")
 
 
 if __name__ == "__main__":

@@ -113,21 +113,30 @@ def _maybe_build_mesh(view) -> Optional[dict]:
     return mesh
 
 
-def _build_update(current_ts: Optional[float] = None) -> dict:
-    from rendering.pointcloud import build_pointcloud_arrays, extract_boat
+def _build_update(current_ts: Optional[float] = None,
+                  last_floor_n: int = 0) -> tuple[dict, int]:
+    """
+    Build a map_update payload and return (payload, new_last_floor_n).
+
+    last_floor_n is the count of floor observations the client already
+    has buffered; the pointcloud is built as a delta beyond that point.
+    """
+    from rendering.pointcloud import build_pointcloud_delta, extract_boat
 
     if _world_state is None:
-        return {"type": "map_update", "pointcloud": {}, "boat": {}}
+        return ({"type": "map_update", "pointcloud": {}, "boat": {}}, 0)
 
     ts = current_ts if current_ts is not None else _world_state.latest_ts()
 
-    # Slice once and reuse the view for both pointcloud and boat lookups.
+    # Slice once and reuse the view for pointcloud, boat, and mesh.
     view = _world_state.state_at(ts) if ts is not None else _world_state
 
-    # Numpy-array fast path: orjson encodes float32 ndarrays directly,
-    # avoiding the float32→float64 promotion in tolist() that doubled
-    # JSON byte size with long-form double formatting.
-    pc = build_pointcloud_arrays(view, current_ts=ts)
+    # Delta pointcloud: only NEW floor points + the (small) decayed fish set.
+    # This drops per-frame encode cost from O(total floor) to O(new floor),
+    # which is ~0 in steady-state replay (floor obs come in at ~1 Hz; we
+    # send 10 frames/s).
+    pc = build_pointcloud_delta(view, current_ts=ts, last_floor_n=last_floor_n)
+    new_floor_n = pc["floor_total"]
 
     boat = extract_boat(view)
 
@@ -168,7 +177,7 @@ def _build_update(current_ts: Optional[float] = None) -> dict:
         payload["forward_scan"] = base64.b64encode(fwd).decode("ascii")
 
     payload["_view"] = view  # internal: passed to mesh stage, stripped before send
-    return payload
+    return payload, new_floor_n
 
 
 async def _dispatch(msg: dict):
@@ -222,10 +231,11 @@ async def ws_state(ws: WebSocket):
     recv_task = asyncio.create_task(_recv_loop())
 
     try:
-        last_tick = time.monotonic()
+        last_tick    = time.monotonic()
+        last_floor_n = 0   # per-connection cursor for delta pointcloud
         while True:
             ts  = _replay_ctrl.position_s if _replay_ctrl is not None else None
-            payload = _build_update(ts)
+            payload, last_floor_n = _build_update(ts, last_floor_n)
             view    = payload.pop("_view", None)
 
             # Mesh: throttle to every 2s AND skip when floor-count unchanged.

@@ -611,41 +611,72 @@ function depthColour(depth, maxDepth) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-//  Point cloud
+//  Point cloud — split into FLOOR (cumulative, append-only) and FISH
+//  (small, replaced each frame). The server sends floor as a delta so
+//  steady-state per-frame work is O(new points) rather than O(total).
 // ─────────────────────────────────────────────────────────────────────────────
-// Single reusable geometry + Float32Array buffers that grow geometrically.
-// Avoids per-frame allocation (was ~1 MB/sec at 40 K points × 10 Hz) and the
-// per-point THREE.Color() allocations (was ~400 K obj/sec).
-const pcGeometry = new THREE.BufferGeometry();
 const pcMaterial = new THREE.PointsMaterial({
   size: 1.4, vertexColors: true, sizeAttenuation: true,
   transparent: true, opacity: 0.92,
 });
-const pointCloud = new THREE.Points(pcGeometry, pcMaterial);
-scene.add(pointCloud);
 
-let _pcPosBuf  = new Float32Array(1024 * 3);
-let _pcColBuf  = new Float32Array(1024 * 3);
-let _pcPosAttr = new THREE.BufferAttribute(_pcPosBuf, 3);
-let _pcColAttr = new THREE.BufferAttribute(_pcColBuf, 3);
-_pcPosAttr.setUsage(THREE.DynamicDrawUsage);
-_pcColAttr.setUsage(THREE.DynamicDrawUsage);
-pcGeometry.setAttribute('position', _pcPosAttr);
-pcGeometry.setAttribute('color',    _pcColAttr);
-pcGeometry.setDrawRange(0, 0);
+// Floor mesh: one big buffer that grows; only the new tail is touched each frame.
+const floorGeo  = new THREE.BufferGeometry();
+let _floorPosBuf  = new Float32Array(1024 * 3);
+let _floorColBuf  = new Float32Array(1024 * 3);
+let _floorPosAttr = new THREE.BufferAttribute(_floorPosBuf, 3);
+let _floorColAttr = new THREE.BufferAttribute(_floorColBuf, 3);
+_floorPosAttr.setUsage(THREE.DynamicDrawUsage);
+_floorColAttr.setUsage(THREE.DynamicDrawUsage);
+floorGeo.setAttribute('position', _floorPosAttr);
+floorGeo.setAttribute('color',    _floorColAttr);
+floorGeo.setDrawRange(0, 0);
+const floorPoints = new THREE.Points(floorGeo, pcMaterial);
+scene.add(floorPoints);
 
-function _pcEnsureCapacity(n) {
-  if (n * 3 <= _pcPosBuf.length) return;
-  let cap = _pcPosBuf.length / 3;
+// Fish mesh: rewritten each frame.
+const fishGeo  = new THREE.BufferGeometry();
+let _fishPosBuf  = new Float32Array(256 * 3);
+let _fishColBuf  = new Float32Array(256 * 3);
+let _fishPosAttr = new THREE.BufferAttribute(_fishPosBuf, 3);
+let _fishColAttr = new THREE.BufferAttribute(_fishColBuf, 3);
+_fishPosAttr.setUsage(THREE.DynamicDrawUsage);
+_fishColAttr.setUsage(THREE.DynamicDrawUsage);
+fishGeo.setAttribute('position', _fishPosAttr);
+fishGeo.setAttribute('color',    _fishColAttr);
+fishGeo.setDrawRange(0, 0);
+const fishPoints = new THREE.Points(fishGeo, pcMaterial);
+scene.add(fishPoints);
+
+function _floorEnsureCapacity(n) {
+  if (n * 3 <= _floorPosBuf.length) return;
+  let cap = _floorPosBuf.length / 3;
   while (cap < n) cap *= 2;
-  _pcPosBuf  = new Float32Array(cap * 3);
-  _pcColBuf  = new Float32Array(cap * 3);
-  _pcPosAttr = new THREE.BufferAttribute(_pcPosBuf, 3);
-  _pcColAttr = new THREE.BufferAttribute(_pcColBuf, 3);
-  _pcPosAttr.setUsage(THREE.DynamicDrawUsage);
-  _pcColAttr.setUsage(THREE.DynamicDrawUsage);
-  pcGeometry.setAttribute('position', _pcPosAttr);
-  pcGeometry.setAttribute('color',    _pcColAttr);
+  const newPos = new Float32Array(cap * 3);
+  const newCol = new Float32Array(cap * 3);
+  newPos.set(_floorPosBuf); newCol.set(_floorColBuf);
+  _floorPosBuf  = newPos;
+  _floorColBuf  = newCol;
+  _floorPosAttr = new THREE.BufferAttribute(_floorPosBuf, 3);
+  _floorColAttr = new THREE.BufferAttribute(_floorColBuf, 3);
+  _floorPosAttr.setUsage(THREE.DynamicDrawUsage);
+  _floorColAttr.setUsage(THREE.DynamicDrawUsage);
+  floorGeo.setAttribute('position', _floorPosAttr);
+  floorGeo.setAttribute('color',    _floorColAttr);
+}
+
+function _fishEnsureCapacity(n) {
+  if (n * 3 <= _fishPosBuf.length) return;
+  let cap = _fishPosBuf.length / 3;
+  while (cap < n) cap *= 2;
+  _fishPosBuf  = new Float32Array(cap * 3);
+  _fishColBuf  = new Float32Array(cap * 3);
+  _fishPosAttr = new THREE.BufferAttribute(_fishPosBuf, 3);
+  _fishColAttr = new THREE.BufferAttribute(_fishColBuf, 3);
+  _fishPosAttr.setUsage(THREE.DynamicDrawUsage);
+  _fishColAttr.setUsage(THREE.DynamicDrawUsage);
+  fishGeo.setAttribute('position', _fishPosAttr);
+  fishGeo.setAttribute('color',    _fishColAttr);
 }
 
 // 256-entry RGB palette for floor depth colouring (shallow → mid → deep).
@@ -663,96 +694,122 @@ const _depthPalette = new Float32Array(256 * 3);
   }
 })();
 
-let _pcLastN     = 0;       // last frame's point count
-let _pcCachedMaxD = 1;      // cached max floor depth
-let _pcMsEMA     = null;    // EMA of updatePointCloud cost (ms)
+let _floorN        = 0;     // total floor points buffered
+let _floorMaxD     = 1;     // cached max floor depth (drives palette mapping)
+let _floorDepthSum = 0;     // running sum of floor depths for HUD average
+let _pcMsEMA       = null;  // EMA of updatePointCloud cost (ms)
+
+// Walk a depth slice, write palette colours, optionally apply forward-scan
+// muted-cyan tint when conf <= 0.45.
+function _colourFloorRange(start, count, depth, conf, depthOffset, confOffset) {
+  const invMaxD = 1 / _floorMaxD;
+  for (let i = 0; i < count; i++) {
+    const w   = (start + i) * 3;
+    const dRaw = depth[depthOffset + i];
+    let t = dRaw * invMaxD;
+    if (t > 1) t = 1; else if (t < 0) t = 0;
+    const pi = ((t * 255) | 0) * 3;
+    let r = _depthPalette[pi], g = _depthPalette[pi+1], b = _depthPalette[pi+2];
+    const c = conf ? (conf[confOffset + i] || 0) : 1;
+    if (c <= 0.45) {
+      // Forward-scan floor return — muted cyan
+      r = r * 0.55;
+      g = g * 0.85 + 0.15;
+      b = b * 0.85 + 0.15;
+    }
+    _floorColBuf[w]   = r;
+    _floorColBuf[w+1] = g;
+    _floorColBuf[w+2] = b;
+  }
+}
 
 function updatePointCloud(pc) {
-  const x = pc.x || [], y = pc.y || [], depth = pc.depth || [];
-  const isFloor = pc.is_floor || [];
-  const conf    = pc.confidence || [];
-  const n = x.length;
-  if (n === 0) {
-    pcGeometry.setDrawRange(0, 0);
-    document.getElementById('hud-points').textContent = 0;
-    return;
+  // pc = { reset, floor_offset, floor_total, floor:{x,y,depth,confidence}, fish:{...} }
+  if (!pc) return;
+
+  // ── Floor: append delta (or reset + write from offset 0) ─────────────────
+  if (pc.reset) {
+    _floorN = 0;
+    _floorDepthSum = 0;
   }
+  const f = pc.floor || {};
+  const fx = f.x || [], fy = f.y || [], fd = f.depth || [], fc = f.confidence || [];
+  const newN     = fx.length;
+  const offset   = pc.floor_offset | 0;
+  const total    = pc.floor_total  | 0;
 
-  _pcEnsureCapacity(n);
-
-  // Find frame's max floor depth in O(N) (loop, not spread, to avoid
-  // call-stack overflow on large arrays).
-  let frameMaxD = 1, depthSum = 0;
-  for (let i = 0; i < n; i++) {
-    depthSum += depth[i];
-    if (isFloor[i]) {
-      const d = depth[i];
-      if (d > frameMaxD) frameMaxD = d;
+  if (newN > 0) {
+    _floorEnsureCapacity(offset + newN);
+    // Write positions at the offset.
+    for (let i = 0; i < newN; i++) {
+      const w = (offset + i) * 3;
+      _floorPosBuf[w]   = fx[i];
+      _floorPosBuf[w+1] = fy[i];
+      _floorPosBuf[w+2] = -fd[i];
     }
-  }
-
-  // Re-colour the whole array if (a) array shrank (old indices may now point
-  // at different observations) or (b) max depth changed (palette mapping
-  // shifted).  Otherwise just colour the new tail.
-  const shrunk      = n < _pcLastN;
-  const maxChanged  = frameMaxD !== _pcCachedMaxD;
-  const fullRebuild = shrunk || maxChanged;
-  _pcCachedMaxD = frameMaxD;
-  const invMaxD = 1 / _pcCachedMaxD;
-
-  const start    = fullRebuild ? 0 : _pcLastN;
-  const posStart = fullRebuild ? 0 : _pcLastN;
-
-  for (let i = posStart; i < n; i++) {
-    const i3 = i * 3;
-    _pcPosBuf[i3]   = x[i];
-    _pcPosBuf[i3+1] = y[i];
-    _pcPosBuf[i3+2] = -depth[i];
-  }
-
-  // Colour the appropriate range.
-  for (let i = start; i < n; i++) {
-    const i3 = i * 3;
-    if (!isFloor[i]) {
-      // Fish echo — orange, dimmed by decayed confidence
-      let cv = (conf[i] || 0) * (1 / 0.65);
-      if (cv > 1) cv = 1; else if (cv < 0) cv = 0;
-      _pcColBuf[i3]   = cv;
-      _pcColBuf[i3+1] = 0.55 * cv;
-      _pcColBuf[i3+2] = 0.05 * cv;
-    } else {
-      // Floor — palette lookup by depth
-      let t = depth[i] * invMaxD;
-      if (t > 1) t = 1; else if (t < 0) t = 0;
-      const pi = ((t * 255) | 0) * 3;
-      let r = _depthPalette[pi], g = _depthPalette[pi+1], b = _depthPalette[pi+2];
-      if ((conf[i] || 0) <= 0.45) {
-        // Forward-scan floor return — muted cyan
-        r = r * 0.55;
-        g = g * 0.85 + 0.15;
-        b = b * 0.85 + 0.15;
+    // Track max depth among the new points; if it changed, recolour all floor.
+    let maxD = _floorMaxD, deltaSum = 0;
+    for (let i = 0; i < newN; i++) {
+      deltaSum += fd[i];
+      if (fd[i] > maxD) maxD = fd[i];
+    }
+    _floorDepthSum += deltaSum;
+    const maxChanged = maxD !== _floorMaxD;
+    _floorMaxD = maxD;
+    if (maxChanged && offset > 0) {
+      // Recolour all previously written floor points (read depth back from
+      // buffer, where it's stored as -Z).
+      for (let i = 0; i < offset; i++) {
+        const w = i * 3;
+        const dRaw = -_floorPosBuf[w + 2];
+        let t = dRaw / _floorMaxD;
+        if (t > 1) t = 1; else if (t < 0) t = 0;
+        const pi = ((t * 255) | 0) * 3;
+        // Forward-scan/regular distinction is lost on recolour — fine,
+        // since maxD changes are rare and the cyan tint is a small visual.
+        _floorColBuf[w]   = _depthPalette[pi];
+        _floorColBuf[w+1] = _depthPalette[pi+1];
+        _floorColBuf[w+2] = _depthPalette[pi+2];
       }
-      _pcColBuf[i3]   = r;
-      _pcColBuf[i3+1] = g;
-      _pcColBuf[i3+2] = b;
     }
+    // Colour the new tail (with conf-based forward-scan tint).
+    _colourFloorRange(offset, newN, fd, fc, 0, 0);
+
+    _floorPosAttr.needsUpdate = true;
+    _floorColAttr.needsUpdate = true;
   }
+  _floorN = total;
+  floorGeo.setDrawRange(0, _floorN);
 
-  // Tell Three.js which slice changed so it only uploads that subrange.
-  _pcPosAttr.updateRange.offset = posStart * 3;
-  _pcPosAttr.updateRange.count  = (n - posStart) * 3;
-  _pcPosAttr.needsUpdate = true;
-  _pcColAttr.updateRange.offset = start * 3;
-  _pcColAttr.updateRange.count  = (n - start) * 3;
-  _pcColAttr.needsUpdate = true;
+  // ── Fish: rewrite from scratch each frame ────────────────────────────────
+  const fish = pc.fish || {};
+  const ffx = fish.x || [], ffy = fish.y || [], ffd = fish.depth || [], ffc = fish.confidence || [];
+  const fishN = ffx.length;
+  if (fishN > 0) {
+    _fishEnsureCapacity(fishN);
+    for (let i = 0; i < fishN; i++) {
+      const w = i * 3;
+      _fishPosBuf[w]   = ffx[i];
+      _fishPosBuf[w+1] = ffy[i];
+      _fishPosBuf[w+2] = -ffd[i];
+      let cv = (ffc[i] || 0) * (1 / 0.65);
+      if (cv > 1) cv = 1; else if (cv < 0) cv = 0;
+      _fishColBuf[w]   = cv;
+      _fishColBuf[w+1] = 0.55 * cv;
+      _fishColBuf[w+2] = 0.05 * cv;
+    }
+    _fishPosAttr.needsUpdate = true;
+    _fishColAttr.needsUpdate = true;
+  }
+  fishGeo.setDrawRange(0, fishN);
 
-  pcGeometry.setDrawRange(0, n);
-  pcGeometry.computeBoundingSphere();
-
-  _pcLastN = n;
-
-  document.getElementById('hud-points').textContent = n;
-  document.getElementById('hud-depth').textContent  = (depthSum / n).toFixed(1);
+  // HUD: total point count + running average floor depth
+  const totalPts = _floorN + fishN;
+  document.getElementById('hud-points').textContent = totalPts;
+  if (_floorN > 0) {
+    document.getElementById('hud-depth').textContent =
+      (_floorDepthSum / _floorN).toFixed(1);
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

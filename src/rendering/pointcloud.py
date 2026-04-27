@@ -92,6 +92,91 @@ def build_pointcloud_arrays(view: "WorldState",
     }
 
 
+def build_pointcloud_delta(view: "WorldState",
+                            current_ts: Optional[float],
+                            last_floor_n: int) -> dict:
+    """
+    Delta pointcloud for the WebSocket loop.
+
+    Floor observations are append-only (sorted by ts); we send only the
+    rows whose floor-rank index >= last_floor_n. The client maintains a
+    cumulative floor buffer and appends to it.
+
+    Fish observations are decayed/culled and rebuilt each frame, so we
+    send the full current fish set.
+
+    Returns:
+      {
+        "reset":        bool,    # client should clear its floor buffer first
+        "floor_offset": int,     # buffer index where these new points go
+        "floor_total":  int,     # client buffer size after appending
+        "floor": {x, y, depth, confidence},   # contiguous float32 ndarrays
+        "fish":  {x, y, depth, confidence},   # contiguous float32 ndarrays
+      }
+
+    All floor arrays carry confidence so the frontend can preserve the
+    forward-scan cyan tint (conf <= 0.45 branch).
+    """
+    empty_f32 = np.empty(0, dtype=np.float32)
+    empty_floor = {"x": empty_f32, "y": empty_f32,
+                   "depth": empty_f32, "confidence": empty_f32}
+    empty_fish  = {"x": empty_f32, "y": empty_f32,
+                   "depth": empty_f32, "confidence": empty_f32}
+
+    d = view._data
+    if d is None or len(d) == 0:
+        return {"reset": last_floor_n != 0, "floor_offset": 0,
+                "floor_total": 0, "floor": empty_floor, "fish": empty_fish}
+
+    is_floor_mask = d[:, _IS_FLOOR] > 0.5
+    floor_rows = d[is_floor_mask]
+    fish_rows  = d[~is_floor_mask]
+    cur_floor_n = len(floor_rows)
+
+    # Backward seek (or first frame after one) — client has more floor
+    # rows than the current view; reset and resend everything.
+    reset = cur_floor_n < last_floor_n
+    floor_start = 0 if reset else last_floor_n
+
+    floor_new = floor_rows[floor_start:]
+    floor_payload = {
+        "x":          np.ascontiguousarray(floor_new[:, _EAST]),
+        "y":          np.ascontiguousarray(floor_new[:, _NORTH]),
+        "depth":      np.ascontiguousarray(floor_new[:, _DEPTH]),
+        "confidence": np.ascontiguousarray(floor_new[:, _CONF]),
+    }
+
+    # Fish: apply exponential decay + cull, mirroring WorldState.to_pointcloud.
+    if len(fish_rows) and current_ts is not None:
+        ages  = np.maximum(0.0, current_ts - fish_rows[:, _TS])
+        conf  = fish_rows[:, _CONF] * np.exp(-_FISH_DECAY_RATE * ages)
+        keep  = conf >= _FISH_MIN_CONF
+        fish_rows = fish_rows[keep]
+        fish_conf = conf[keep]
+    elif len(fish_rows):
+        fish_conf = fish_rows[:, _CONF]
+    else:
+        fish_conf = empty_f32
+
+    if len(fish_rows):
+        fish_payload = {
+            "x":          np.ascontiguousarray(fish_rows[:, _EAST]),
+            "y":          np.ascontiguousarray(fish_rows[:, _NORTH]),
+            "depth":      np.ascontiguousarray(fish_rows[:, _DEPTH]),
+            "confidence": np.ascontiguousarray(fish_conf),
+        }
+    else:
+        fish_payload = empty_fish
+
+    return {
+        "reset":        reset,
+        "floor_offset": floor_start,
+        "floor_total":  cur_floor_n,
+        "floor":        floor_payload,
+        "fish":         fish_payload,
+    }
+
+
 def extract_boat(state: "WorldState") -> dict:
     """Return the most recent boat position from the state.
 
