@@ -158,6 +158,23 @@ def build_pointcloud_delta(view: "WorldState",
     else:
         fish_conf = empty_f32
 
+    # Fish decimation: forward-scan pings produce many returns from the
+    # same school, peaking at ~27 K observations mid-replay. Quantise to
+    # a 0.5 m 3D grid and keep the most recent per cell — visually the
+    # school is unchanged, but per-frame JSON drops from ~1 MiB to ~650 KiB.
+    if len(fish_rows) > 0:
+        cell = 0.5
+        inv  = 1.0 / cell
+        ei = np.floor(fish_rows[:, _EAST]  * inv).astype(np.int64) & 0xFFFFFF
+        ni = np.floor(fish_rows[:, _NORTH] * inv).astype(np.int64) & 0xFFFFFF
+        di = np.floor(fish_rows[:, _DEPTH] * inv).astype(np.int64) & 0xFFFF
+        key = ei | (ni << 24) | (di << 48)
+        _, last_in_reversed = np.unique(key[::-1], return_index=True)
+        keep_idx = (len(key) - 1) - last_in_reversed
+        keep_idx.sort()
+        fish_rows = fish_rows[keep_idx]
+        fish_conf = fish_conf[keep_idx]
+
     if len(fish_rows):
         fish_payload = {
             "x":          np.ascontiguousarray(fish_rows[:, _EAST]),

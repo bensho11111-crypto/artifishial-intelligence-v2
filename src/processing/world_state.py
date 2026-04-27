@@ -177,13 +177,18 @@ class WorldState:
         }
 
     def to_mesh(self, min_points: int = 4,
-                as_arrays: bool = False) -> Optional[dict]:
+                as_arrays: bool = False,
+                decimate_cell_m: float = 0.5) -> Optional[dict]:
         """
         Build a Delaunay triangulation mesh from the observation positions.
         Returns None if there are too few points.
 
-        Much cheaper than marching cubes on a voxel grid — for typical
-        sessions (<10 000 points) this runs in <50 ms.
+        decimate_cell_m: when > 0, quantise floor positions to a square
+        grid of this size (in metres) and keep one representative
+        observation per cell (the most recent one) before triangulating.
+        Forward-scan returns produce many duplicates within a metre or
+        two — culling them collapses Delaunay cost from O(n log n) on
+        ~120k points to ~8k points without changing the visible surface.
 
         as_arrays=True returns contiguous numpy arrays instead of nested
         Python lists. Used by the WS fast path so orjson can encode the
@@ -203,6 +208,22 @@ class WorldState:
         if len(data) < min_points:
             return None
 
+        # Decimate to a regular grid: keep the last observation per cell.
+        # The buffer is sorted by ts, so reversing then taking np.unique's
+        # first-seen indices gives "last per cell".
+        if decimate_cell_m > 0 and len(data) > 4:
+            inv = 1.0 / decimate_cell_m
+            ei  = np.floor(data[:, _EAST]  * inv).astype(np.int32)
+            ni  = np.floor(data[:, _NORTH] * inv).astype(np.int32)
+            keys = ei.astype(np.int64) * (np.int64(1) << 32) \
+                 + (ni.astype(np.int64) & 0xffffffff)
+            _, last_in_reversed = np.unique(keys[::-1], return_index=True)
+            keep = (len(keys) - 1) - last_in_reversed
+            keep.sort()
+            data = data[keep]
+            if len(data) < min_points:
+                return None
+
         pts    = data[:, [_EAST, _NORTH]]
         depths = data[:, _DEPTH]
 
@@ -213,17 +234,11 @@ class WorldState:
             np.column_stack([pts, -depths]).astype(np.float32, copy=False))
         faces = np.ascontiguousarray(tri.simplices, dtype=np.int32)
 
+        # Frontend recovers depth from vertex Z (= -depth), so we don't
+        # need to ship a separate depth array.
         if as_arrays:
-            return {
-                "vertices": verts,
-                "faces":    faces,
-                "depth":    np.ascontiguousarray(depths),
-            }
-        return {
-            "vertices": verts.tolist(),
-            "faces":    faces.tolist(),
-            "depth":    depths.tolist(),
-        }
+            return {"vertices": verts, "faces": faces}
+        return {"vertices": verts.tolist(), "faces": faces.tolist()}
 
     def to_contour_grid(self, cell_m: float = 2.0) -> Optional[dict]:
         """

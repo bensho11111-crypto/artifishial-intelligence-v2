@@ -823,9 +823,14 @@ function updateScanMesh(meshData) {
 
   const verts  = meshData.vertices;
   const faces  = meshData.faces;
-  const depths = meshData.depth || [];
 
-  const maxD = depths.length ? Math.max(...depths, 1) : 20;
+  // Depth = -vertex.z (server stores it as -depth). Compute maxD inline
+  // rather than shipping a separate depth array.
+  let maxD = 1;
+  for (let i = 0; i < verts.length; i++) {
+    const d = -verts[i][2];
+    if (d > maxD) maxD = d;
+  }
 
   const geo  = new THREE.BufferGeometry();
   const pos  = new Float32Array(verts.length * 3);
@@ -835,7 +840,7 @@ function updateScanMesh(meshData) {
     pos[i*3]   = verts[i][0];
     pos[i*3+1] = verts[i][1];
     pos[i*3+2] = verts[i][2];   // already -depth from server
-    const d = depths[i] || 0;
+    const d = -verts[i][2];
     const c = depthColour(d, maxD);
     col[i*3]   = c.r; col[i*3+1] = c.g; col[i*3+2] = c.b;
   }
@@ -1260,6 +1265,9 @@ function connect() {
   statusEl.textContent = 'CONNECTING…';
 
   ws = new WebSocket(`ws://${location.host}/ws/state`);
+  // Server sends payloads as binary (orjson bytes) so we skip its UTF-8
+  // validation hop; decode here with TextDecoder.
+  ws.binaryType = "arraybuffer";
 
   ws.onopen = () => {
     statusEl.className = 'ok';
@@ -1277,9 +1285,15 @@ function connect() {
     statusEl.textContent = 'ERROR';
   };
 
+  const _wsDecoder = new TextDecoder('utf-8');
   ws.onmessage = (ev) => {
     let msg;
-    try { msg = JSON.parse(ev.data); } catch { return; }
+    try {
+      const text = (typeof ev.data === 'string')
+        ? ev.data
+        : _wsDecoder.decode(ev.data);
+      msg = JSON.parse(text);
+    } catch { return; }
 
     switch (msg.type) {
 

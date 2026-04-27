@@ -39,10 +39,12 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
+from server.profile import FrameProfiler, profiler_from_env
 
-def _dumps(obj) -> str:
-    """orjson-backed JSON encoder. ~5-10x faster than stdlib for our payloads."""
-    return orjson.dumps(obj, option=orjson.OPT_SERIALIZE_NUMPY).decode("utf-8")
+
+def _dumps(obj) -> bytes:
+    """orjson-backed JSON encoder; returns raw bytes for ws.send_bytes."""
+    return orjson.dumps(obj, option=orjson.OPT_SERIALIZE_NUMPY)
 
 app = FastAPI(title="Artifishial Intelligence v3.3 (cone+perf+fe)")
 
@@ -94,19 +96,15 @@ def _floor_count(view) -> int:
     return int((d[:, 7] > 0.5).sum())  # _IS_FLOOR == 7
 
 
-def _maybe_build_mesh(view) -> Optional[dict]:
-    """
-    Rebuild the mesh only when the floor-point count differs from the
-    cached value. Returns:
-      - mesh dict if a fresh mesh was built (caller should send it)
-      - None if cached mesh is still valid (caller should skip sending)
-    """
+def _mesh_needs_rebuild(view) -> bool:
+    """Cheap probe — true iff the floor point count grew since last build."""
+    return _floor_count(view) != _mesh_cache_floor_n
+
+
+def _rebuild_mesh(view) -> Optional[dict]:
+    """Run Delaunay (the expensive part) and update the cache."""
     global _mesh_cache, _mesh_cache_floor_n
     floor_n = _floor_count(view)
-    if floor_n == _mesh_cache_floor_n:
-        return None
-    # as_arrays=True: numpy arrays, encoded directly by orjson (smaller +
-    # faster than going through .tolist()).
     mesh = view.to_mesh(min_points=4, as_arrays=True)
     _mesh_cache = mesh
     _mesh_cache_floor_n = floor_n
@@ -114,12 +112,17 @@ def _maybe_build_mesh(view) -> Optional[dict]:
 
 
 def _build_update(current_ts: Optional[float] = None,
-                  last_floor_n: int = 0) -> tuple[dict, int]:
+                  last_floor_n: int = 0,
+                  prof: Optional[FrameProfiler] = None) -> tuple[dict, int]:
     """
     Build a map_update payload and return (payload, new_last_floor_n).
 
     last_floor_n is the count of floor observations the client already
     has buffered; the pointcloud is built as a delta beyond that point.
+
+    `prof` is an optional FrameProfiler — when enabled, .stage() is
+    called between each logical step so per-stage timings can be
+    aggregated by the caller.
     """
     from rendering.pointcloud import build_pointcloud_delta, extract_boat
 
@@ -130,15 +133,15 @@ def _build_update(current_ts: Optional[float] = None,
 
     # Slice once and reuse the view for pointcloud, boat, and mesh.
     view = _world_state.state_at(ts) if ts is not None else _world_state
+    if prof: prof.stage("state_at")
 
     # Delta pointcloud: only NEW floor points + the (small) decayed fish set.
-    # This drops per-frame encode cost from O(total floor) to O(new floor),
-    # which is ~0 in steady-state replay (floor obs come in at ~1 Hz; we
-    # send 10 frames/s).
     pc = build_pointcloud_delta(view, current_ts=ts, last_floor_n=last_floor_n)
     new_floor_n = pc["floor_total"]
+    if prof: prof.stage("pointcloud_build")
 
     boat = extract_boat(view)
+    if prof: prof.stage("extract_boat")
 
     payload: dict = {
         "type":       "map_update",
@@ -159,6 +162,7 @@ def _build_update(current_ts: Optional[float] = None,
     echo = _world_state.echo_at(ts) if ts is not None else None
     if echo:
         payload["echo"] = base64.b64encode(echo).decode("ascii")
+    if prof: prof.stage("echo_lookup")
 
     if _ground_truth is not None and ts is not None:
         payload["fish_positions"] = [
@@ -171,10 +175,12 @@ def _build_update(current_ts: Optional[float] = None,
             }
             for s in _ground_truth.fish_schools
         ]
+    if prof: prof.stage("ground_truth")
 
     fwd = _world_state.forward_scan_at(ts) if ts is not None else None
     if fwd:
         payload["forward_scan"] = base64.b64encode(fwd).decode("ascii")
+    if prof: prof.stage("fwd_scan_lookup")
 
     payload["_view"] = view  # internal: passed to mesh stage, stripped before send
     return payload, new_floor_n
@@ -200,14 +206,14 @@ async def ws_state(ws: WebSocket):
     await _manager.connect(ws)
 
     # Send session info immediately
-    await ws.send_text(_dumps({
+    await ws.send_bytes(_dumps({
         "type":             "session_info",
         "duration_s":       _duration_s,
         "has_ground_truth": _ground_truth is not None,
     }))
 
     if _ground_truth is not None:
-        await ws.send_text(_dumps({
+        await ws.send_bytes(_dumps({
             "type": "ground_truth",
             "data": {
                 "fish_schools": _ground_truth.fish_schools,
@@ -229,27 +235,59 @@ async def ws_state(ws: WebSocket):
             pass
 
     recv_task = asyncio.create_task(_recv_loop())
+    prof = profiler_from_env()
 
     try:
         last_tick    = time.monotonic()
         last_floor_n = 0   # per-connection cursor for delta pointcloud
+        mesh_task: Optional[asyncio.Task] = None  # in-flight Delaunay rebuild
         while True:
             ts  = _replay_ctrl.position_s if _replay_ctrl is not None else None
-            payload, last_floor_n = _build_update(ts, last_floor_n)
+            prof.start_frame(ts)
+
+            payload, last_floor_n = _build_update(ts, last_floor_n, prof=prof)
             view    = payload.pop("_view", None)
 
             # Mesh: throttle to every 2s AND skip when floor-count unchanged.
+            # Build in a background thread so Delaunay's ~50–150 ms doesn't
+            # block this iteration; attach the result to whichever frame
+            # is being built when the task finishes.
             now = time.time()
-            if (view is not None
-                    and now - _last_mesh_ts >= 2.0
-                    and _world_state is not None):
-                mesh = _maybe_build_mesh(view)
-                if mesh is not None:
-                    payload["mesh"] = mesh
+            should_consider = (view is not None
+                               and now - _last_mesh_ts >= 2.0
+                               and _world_state is not None
+                               and mesh_task is None)
+            do_rebuild = should_consider and _mesh_needs_rebuild(view)
+            prof.stage("mesh_check")
+
+            if do_rebuild:
+                # Capture the current view; the worker will read view._data
+                # which is a numpy slice into the world buffer. WorldState
+                # is append-only so reading concurrently is safe.
+                mesh_task = asyncio.create_task(
+                    asyncio.to_thread(_rebuild_mesh, view))
+                _last_mesh_ts = now
+            elif should_consider:
                 _last_mesh_ts = now
 
-            await ws.send_text(_dumps(payload))
+            if mesh_task is not None and mesh_task.done():
+                mesh = mesh_task.result()
+                mesh_task = None
+                if mesh is not None:
+                    payload["mesh"] = mesh
+                    prof.note_mesh_built()
+                prof.stage("mesh_build")
+
+            encoded = _dumps(payload)
+            prof.stage("json_encode")
+
+            await ws.send_bytes(encoded)
+            prof.stage("ws_send")
+
             await asyncio.sleep(0.1)
+            prof.stage("sleep")
+
+            prof.end_frame(payload_bytes=len(encoded))
 
             # Advance replay clock by ACTUAL elapsed wall-clock time,
             # not a hardcoded 0.1s. Without this the displayed time falls
