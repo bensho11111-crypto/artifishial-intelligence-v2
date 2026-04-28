@@ -174,8 +174,27 @@ def _parse_forward_returns(scan: bytes, east_m: float, north_m: float,
     # the floor within N_RANGE bins, so a bright bin in that beam can't
     # be a real floor return.
     floor_in_beam = expected_ri < _FWD_N_RANGE                           # (1, BEAM)
+
+    # Shape gate: a real floor return is a tight Gaussian (sigma 1.5
+    # bins), so the bin 5 bins ahead of the centre is near-noise — by
+    # construction in forward_scan.py, weight at offset 5 is ~0.004 so
+    # amp ≤ ~14. A fish bin inside a school doesn't have this drop-off:
+    # the same beam keeps hitting the school for many bins around the
+    # candidate, so amp[ri-5] is still in the fish range (50+). This
+    # cleanly separates the "fish at the deep edge of a school in a
+    # beam that just-barely-missed the floor" case from real floor.
+    shape_check_ri = np.maximum(0, candidate_ri - 5)                     # (AZ, BEAM)
+    az_g, beam_g   = np.meshgrid(np.arange(_FWD_N_AZIMUTH),
+                                  np.arange(_FWD_N_BEAMS), indexing="ij")
+    shape_amp      = arr[az_g, beam_g, shape_check_ri]                   # (AZ, BEAM)
+    # 30 sits above floor's max-neighbor amp (~14) and below the fish
+    # threshold (50). Skip the check when the candidate is at ri < 5
+    # (the floor would be almost on top of the boat — let tolerance
+    # handle it).
+    shape_ok = (shape_amp <= 30) | (candidate_ri < 5)
+
     keep_floor = ((candidate_ri >= 0) & in_tol
-                  & _FWD_BEAM_VALID[None, :] & floor_in_beam)
+                  & _FWD_BEAM_VALID[None, :] & floor_in_beam & shape_ok)
     floor_ri = np.where(keep_floor, candidate_ri, -1)
 
     floor_amp = np.zeros(floor_ri.shape, dtype=np.uint8)
