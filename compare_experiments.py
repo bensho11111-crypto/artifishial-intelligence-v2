@@ -77,10 +77,10 @@ def main():
         print(f"Loading {name}...", end=" ")
         data = load_eval_results(file_path)
         if data:
-            print("✓")
+            print("[OK]")
             results[name] = extract_metrics(data)
         else:
-            print("✗ (file not ready)")
+            print("[PENDING]")
             results[name] = None
 
     print("\n" + "-"*80)
@@ -127,16 +127,14 @@ def main():
 
     print("\n" + "="*80)
     print("INTERPRETATION")
-    print("="*80)
-    print("""
-oracle_fraction: What % of the oracle's catch rate does our model achieve?
-                 Higher is better (max 100%). Target: >5%
-
-captain_score:   How many times better is ModelGuided vs Random?
-                 Higher is better. Baseline ≈1.6x, target >5x
-
-The best approach is the one with highest oracle_fraction and captain_score.
-""")
+    print("="*80 + "\n")
+    print("oracle_fraction: What % of the oracle's catch rate does our model achieve?")
+    print("                 Higher is better (max 100%). Target: >5%")
+    print("")
+    print("captain_score:   How many times better is ModelGuided vs Random?")
+    print("                 Higher is better. Baseline ~1.6x, target >5x")
+    print("")
+    print("The best approach is the one with highest oracle_fraction and captain_score.")
 
 
 if __name__ == "__main__":
