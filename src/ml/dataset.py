@@ -2,6 +2,7 @@
 src/ml/dataset.py
 
 Windowed dataset for fish catch prediction from paired .ticks + _catches.json files.
+Supports fast HDF5 cache loading.
 """
 import numpy as np
 import torch
@@ -11,6 +12,12 @@ from pathlib import Path
 from torch.utils.data import Dataset
 from ml.config import ModelConfig
 from ticks.replayer import Replayer
+
+try:
+    import h5py
+    HAS_H5PY = True
+except ImportError:
+    HAS_H5PY = False
 
 SPECIES = ["largemouth bass", "rainbow trout", "common carp", "bluegill bream"]
 
@@ -67,10 +74,21 @@ class FishCatchDataset(Dataset):
         self.data_dir = Path(data_dir)
         self.cfg = cfg
         self.augment = augment
-        self.window_size = cfg.window_size  # typically 60 ticks at 1 Hz
-        self.horizon_s = cfg.horizon_s      # typically 300 seconds
+        self.window_size = cfg.window_size
+        self.horizon_s = cfg.horizon_s
+        self._use_h5 = False
+        self._h5_file = None
+        self._h5_group = None
+        self._obs_cache = {}
+        self._catches = {}
 
-        # Find all .ticks files and their catch pairs
+        # Check for HDF5 cache (fast path)
+        cache_h5 = self.data_dir.parent / (self.data_dir.name + "_cache.h5")
+        if cache_h5.exists() and HAS_H5PY:
+            self._load_from_h5py(cache_h5, train)
+            return
+
+        # Fall back to .ticks files (slow path)
         ticks_files = sorted(self.data_dir.glob("*.ticks"))
         assert len(ticks_files) > 0, f"No .ticks files in {data_dir}"
 
@@ -83,7 +101,6 @@ class FishCatchDataset(Dataset):
 
         # Build per-session window index: (session_path, end_idx)
         self._index = []
-        self._obs_cache = {}
 
         for session_path in sessions:
             catch_path = session_path.parent / (session_path.stem + "_catches.json")
@@ -119,7 +136,6 @@ class FishCatchDataset(Dataset):
                 self._index.append((str(session_path), end_idx))
 
         # Load all catches into memory
-        self._catches = {}
         for session_path in sessions:
             catch_path = session_path.parent / (session_path.stem + "_catches.json")
             if catch_path.exists():
@@ -131,10 +147,49 @@ class FishCatchDataset(Dataset):
                     print(f"Warning: skipping catches for {session_path}: {e}")
                     self._catches[str(session_path)] = []
 
+    def _load_from_h5py(self, cache_h5_path, train: bool):
+        """Load dataset from pre-computed HDF5 cache with lazy loading."""
+        self._h5_file = h5py.File(cache_h5_path, 'r')
+        split_type = 'train' if train else 'val'
+        self._h5_group = self._h5_file[split_type]
+        self._use_h5 = True
+
+        # Build index: each window is indexed 0..N
+        n_windows = self._h5_group['scans'].shape[0]
+        self._index = [(i,) for i in range(n_windows)]
+
     def __len__(self):
         return len(self._index)
 
     def __getitem__(self, idx):
+        if self._use_h5:
+            return self._getitem_h5(idx)
+        else:
+            return self._getitem_ticks(idx)
+
+    def _getitem_h5(self, idx):
+        """Load window from HDF5 cache with lazy loading."""
+        window_idx = self._index[idx][0]
+
+        # Read directly from HDF5 (slicing is efficient, no full load)
+        scans_uint8 = self._h5_group['scans'][window_idx]  # (60, 1, 24, 60, 128)
+        scans = scans_uint8.astype(np.float32) / 255.0
+        scan_valid = self._h5_group['scan_valid'][window_idx].astype(bool)  # (60,)
+        nav = self._h5_group['nav'][window_idx].astype(np.float32)  # (60, 7)
+        label = self._h5_group['labels'][window_idx].astype(np.float32)  # (4,)
+
+        if self.augment:
+            scans, nav = self._augment(scans, nav, scan_valid)
+
+        return {
+            "scans": torch.from_numpy(scans),
+            "scan_valid": torch.from_numpy(scan_valid),
+            "nav": torch.from_numpy(nav),
+            "label": torch.from_numpy(label),
+        }
+
+    def _getitem_ticks(self, idx):
+        """Load window from .ticks files and cache."""
         session_path, end_idx = self._index[idx]
         obs_window = self._obs_cache[session_path][end_idx - self.window_size:end_idx]
 
