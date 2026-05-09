@@ -72,15 +72,22 @@ def main():
 
     print(f"Train samples: {len(train_ds)}, Val samples: {len(val_ds)}")
 
-    # Compute sample weights for balanced training
+    # Compute sample weights for balanced training (fast: read labels directly from HDF5)
     # Positive windows get 30x weight to increase their frequency in batches
-    weights = []
-    for i in range(len(train_ds)):
-        label = train_ds[i]["label"]
-        if label.max() > 0:
-            weights.append(30.0)  # Positive window — boost frequency
-        else:
-            weights.append(1.0)   # Negative window
+    print("Computing sample weights...", flush=True)
+    if train_ds._use_h5 and train_ds._h5_group is not None:
+        # Read all labels directly from HDF5 without loading full windows
+        all_labels = train_ds._h5_group['labels'][:]  # (N, 4)
+        has_pos = (all_labels.max(axis=1) > 0).astype(float)  # (N,) boolean
+        weights = np.where(has_pos > 0, 30.0, 1.0)  # 30x boost for positive
+    else:
+        # Fallback: iterate through dataset (slower)
+        weights = []
+        for i in range(len(train_ds)):
+            label = train_ds[i]["label"].numpy()
+            weights.append(30.0 if label.max() > 0 else 1.0)
+        weights = np.array(weights)
+    print(f"Weights computed: {weights.sum():.0f} total, {(weights > 1).sum()} positive samples", flush=True)
 
     sampler = WeightedRandomSampler(weights, len(train_ds), replacement=True)
 
