@@ -20,7 +20,7 @@ from pathlib import Path
 import torch
 import torch.nn as nn
 import numpy as np
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, WeightedRandomSampler
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import OneCycleLR
 
@@ -72,10 +72,22 @@ def main():
 
     print(f"Train samples: {len(train_ds)}, Val samples: {len(val_ds)}")
 
+    # Compute sample weights for balanced training
+    # Positive windows get 30x weight to increase their frequency in batches
+    weights = []
+    for i in range(len(train_ds)):
+        label = train_ds[i]["label"]
+        if label.max() > 0:
+            weights.append(30.0)  # Positive window — boost frequency
+        else:
+            weights.append(1.0)   # Negative window
+
+    sampler = WeightedRandomSampler(weights, len(train_ds), replacement=True)
+
     train_loader = DataLoader(
         train_ds,
         batch_size=args.batch,
-        shuffle=True,
+        sampler=sampler,
         num_workers=0,
         pin_memory=False
     )
