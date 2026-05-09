@@ -6,6 +6,9 @@ Generate synthetic .ticks + _catches.json training datasets.
 Creates pairs of recordings and ground-truth catch labels for training the
 fish detection model. Uses the synthetic session generator to create
 deterministic, reproducible fishing scenarios.
+
+Supports parallel generation for faster data creation:
+  python tools/generate_dataset.py data/training/ --n-sessions 100 --workers 4
 """
 import argparse
 import sys
@@ -15,6 +18,7 @@ import math
 import random
 import numpy as np
 from pathlib import Path
+from multiprocessing import Pool
 
 # Add src to path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
@@ -83,66 +87,88 @@ def generate_catches(world_state_rows, session, duration_s):
     return catches
 
 
+def _generate_session_worker(args_tuple):
+    """Worker function for parallel session generation."""
+    out_dir, session_idx, duration_s, base_seed = args_tuple
+
+    out_path = Path(out_dir)
+    session_seed = base_seed + session_idx
+
+    # Generate synthetic session
+    session = generate(duration_s=duration_s, seed=session_seed)
+
+    session_name = f"synthetic_{session_idx:04d}"
+    ticks_path = out_path / f"{session_name}.ticks"
+    catches_path = out_path / f"{session_name}_catches.json"
+
+    # Write .ticks file
+    with Recorder(str(ticks_path)) as rec:
+        rec.set_metadata("source", "synthetic")
+        rec.set_metadata("seed", str(session_seed))
+        for tick in session.ticks:
+            rec.record(tick)
+
+    # Collect world state and generate catches
+    world_state_rows = []
+    for tick in session.ticks:
+        if tick.gps:
+            east_m, north_m = _enu_from_gps(tick.gps.lat, tick.gps.lon)
+            world_state_rows.append({
+                "ts": tick.gps.ts,
+                "east_m": east_m,
+                "north_m": north_m,
+                "depth_m": tick.sonar.depth_m if tick.sonar else 0.0,
+                "speed_kts": tick.gps.speed_kts,
+                "heading_deg": tick.gps.heading_deg,
+                "confidence": 0.9,
+            })
+
+    catches = generate_catches(world_state_rows, session, session.duration_s)
+
+    with open(catches_path, "w") as f:
+        json.dump({
+            "session_id": session_name,
+            "horizon_s": 300,
+            "catches": catches,
+        }, f, indent=2)
+
+    return (session_idx, len(world_state_rows), len(catches))
+
+
 def main():
     p = argparse.ArgumentParser(
-        description="Generate synthetic .ticks + _catches.json training dataset pairs"
+        description="Generate synthetic .ticks + _catches.json training datasets"
     )
     p.add_argument("out_dir", help="Output directory for .ticks and _catches.json files")
     p.add_argument("--n-sessions", type=int, default=20, help="Number of sessions to generate")
     p.add_argument("--duration", type=float, default=120.0, help="Session duration in seconds")
     p.add_argument("--seed", type=int, default=42, help="Random seed for reproducibility")
+    p.add_argument("--workers", type=int, default=1, help="Number of parallel workers (1=serial)")
     args = p.parse_args()
 
     out_path = Path(args.out_dir)
     out_path.mkdir(parents=True, exist_ok=True)
 
-    for i in range(args.n_sessions):
-        print(f"[{i+1}/{args.n_sessions}] Generating session {i}...")
-        random.seed(args.seed + i)
-        np.random.seed(args.seed + i)
+    # Prepare worker arguments
+    worker_args = [
+        (str(out_path), i, args.duration, args.seed)
+        for i in range(args.n_sessions)
+    ]
 
-        # Generate synthetic session
-        session = generate(duration_s=args.duration, seed=args.seed + i)
+    if args.workers == 1:
+        # Serial processing
+        print(f"Generating {args.n_sessions} sessions (serial)...")
+        for i, (session_idx, n_obs, n_catches) in enumerate(map(_generate_session_worker, worker_args), 1):
+            print(f"  [{i}/{args.n_sessions}] Session {session_idx:04d}: {n_obs} obs, {n_catches} catches")
+    else:
+        # Parallel processing
+        print(f"Generating {args.n_sessions} sessions with {args.workers} workers...")
+        with Pool(args.workers) as pool:
+            results = pool.imap_unordered(_generate_session_worker, worker_args)
+            for i, (session_idx, n_obs, n_catches) in enumerate(results, 1):
+                print(f"  [{i}/{args.n_sessions}] Session {session_idx:04d}: {n_obs} obs, {n_catches} catches")
 
-        session_name = f"synthetic_{i:04d}"
-        ticks_path = out_path / f"{session_name}.ticks"
-        catches_path = out_path / f"{session_name}_catches.json"
-
-        # Write .ticks file with all ticks from the session
-        with Recorder(str(ticks_path)) as rec:
-            rec.set_metadata("source", "synthetic")
-            rec.set_metadata("seed", str(args.seed + i))
-            for tick in session.ticks:
-                rec.record(tick)
-
-        # Collect world state observations for catch generation
-        # Convert GPS lat/lon to metric ENU coordinates
-        world_state_rows = []
-        for tick in session.ticks:
-            if tick.gps:
-                east_m, north_m = _enu_from_gps(tick.gps.lat, tick.gps.lon)
-                world_state_rows.append({
-                    "ts": tick.gps.ts,
-                    "east_m": east_m,
-                    "north_m": north_m,
-                    "depth_m": tick.sonar.depth_m if tick.sonar else 0.0,
-                    "speed_kts": tick.gps.speed_kts,
-                    "heading_deg": tick.gps.heading_deg,
-                    "confidence": 0.9,  # synthetic → high confidence
-                })
-
-        # Generate and write catches.json
-        catches = generate_catches(world_state_rows, session, session.duration_s)
-
-        with open(catches_path, "w") as f:
-            json.dump({
-                "session_id": session_name,
-                "horizon_s": 300,
-                "catches": catches,
-            }, f, indent=2)
-
-        print(f"  -> {ticks_path} ({len(world_state_rows)} observations)")
-        print(f"  -> {catches_path} ({len(catches)} catches)")
+    print(f"\nGeneration complete! {args.n_sessions} sessions written to {out_path}/")
 
 
 if __name__ == "__main__":
