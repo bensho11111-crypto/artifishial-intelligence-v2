@@ -84,7 +84,7 @@ def main():
         val_ds,
         batch_size=args.batch,
         shuffle=False,
-        num_workers=0,
+        num_workers=2,  # Parallel data loading
         pin_memory=True if device.type == "cuda" else False
     )
 
