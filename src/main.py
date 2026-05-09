@@ -19,13 +19,18 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 
 def parse_args():
-    p = argparse.ArgumentParser(description="Artifishial Intelligence v3.3 (cone+perf+fe)")
+    p = argparse.ArgumentParser(description="Artifishial Intelligence v3.4 (stream+restart)")
     p.add_argument("--replay",    default=None, metavar="FILE",
-                   help=".ticks SQLite recording to replay")
+                   help=".ticks SQLite recording to replay (pre-baked)")
+    p.add_argument("--stream",    default=None, metavar="FILE",
+                   help=".ticks recording to stream in wall-clock time, "
+                        "as if the data were arriving from hardware live")
     p.add_argument("--live",      default=None, metavar="PORT",
                    help="Serial port for live NMEA (e.g. /dev/ttyUSB0 or COM3)")
     p.add_argument("--gt",        default=None, metavar="FILE",
                    help="ground_truth.json (optional, enables fish overlay)")
+    p.add_argument("--model",     default=None, metavar="FILE",
+                   help="Trained .pt checkpoint for fish catch prediction")
     p.add_argument("--host",      default="0.0.0.0")
     p.add_argument("--port",      default=8000, type=int)
     p.add_argument("--duration",  default=120.0, type=float,
@@ -58,6 +63,54 @@ async def _live_loop(serial_port: str, fusion, world_state):
             world_state.add(obs)
 
 
+async def _stream_recording_loop(path: str, fusion, world_state, stream_ctrl, inference_engine=None):
+    """
+    Background task: read a .ticks recording and emit Ticks paced to their
+    timestamps in wall-clock time, exactly as a hardware stream would.
+
+    Each tick is delayed by (tick.ts - first_ts) - elapsed_wall_seconds so
+    the session plays at 1×. Forward-scan and sonar bytes are preserved
+    end-to-end. Honours stream_ctrl.restart_event: when set, the world
+    state is wiped and playback resumes from the first tick.
+    """
+    import asyncio, time
+    from ticks.replayer import Replayer
+
+    print(f"[stream] Opening recording: {path}")
+    with Replayer(path) as rep:
+        first_ts = rep.start_ts
+        print(f"[stream] Duration {rep.duration_s:.1f}s, start_ts={first_ts:.3f}")
+        while True:
+            wall0 = time.monotonic()
+            n = 0
+            restarted = False
+            for tick in rep.iter_all():
+                if stream_ctrl.consume_restart():
+                    print(f"[stream] Restart requested at tick #{n}; resetting.")
+                    world_state.reset()
+                    fusion.reset(preserve_position=False)
+                    if inference_engine is not None:
+                        inference_engine.reset()
+                    restarted = True
+                    break
+                target_wall = wall0 + (tick.ts - first_ts)
+                delay = target_wall - time.monotonic()
+                if delay > 0:
+                    await asyncio.sleep(delay)
+                for obs in fusion.process(tick):
+                    world_state.add(obs)
+                n += 1
+            if restarted:
+                continue
+            print(f"[stream] End of recording reached ({n} ticks). "
+                  f"Awaiting restart…")
+            await stream_ctrl.restart_event.wait()
+            stream_ctrl.consume_restart()
+            print(f"[stream] Restart received; resetting and replaying.")
+            world_state.reset()
+            fusion.reset(preserve_position=False)
+
+
 async def main():
     args = parse_args()
 
@@ -70,12 +123,20 @@ async def main():
     fusion      = Fusion()
     world_state = WorldState()
     replay_ctrl = None
+    stream_ctrl = None
     ground_truth = None
 
     # ── Load ground truth if supplied ────────────────────────────────────────
     if args.gt:
         from ground_truth.manifest import GroundTruth
         ground_truth = GroundTruth.from_file(args.gt)
+
+    # ── Load inference engine if supplied ─────────────────────────────────────
+    if args.model:
+        from ml.inference import InferenceEngine
+        inference_engine = InferenceEngine(args.model)
+    else:
+        inference_engine = None
 
     # ── Mode: replay .ticks file ──────────────────────────────────────────────
     if args.replay:
@@ -87,6 +148,13 @@ async def main():
             duration    = rep.duration_s
         replay_ctrl = ReplayController(duration_s=duration)
         print(f"[main] {len(world_state)} observations loaded")
+
+    # ── Mode: stream a recording in wall-clock time ──────────────────────────
+    elif args.stream:
+        from server.stream_controller import StreamController
+        stream_ctrl = StreamController()
+        print(f"[main] Stream mode: {args.stream} (wall-clock paced)")
+        # No replay_ctrl — frontend treats this like a live session.
 
     # ── Mode: synthetic session ───────────────────────────────────────────────
     elif not args.live:
@@ -107,14 +175,16 @@ async def main():
         # replay_ctrl stays None — no seeking in live mode
 
     set_session(world_state, replay_ctrl, ground_truth,
-                duration_s=replay_ctrl.duration_s if replay_ctrl else None)
+                duration_s=replay_ctrl.duration_s if replay_ctrl else None,
+                stream_ctrl=stream_ctrl,
+                inference_engine=inference_engine)
 
     print(f"\n{'='*52}")
-    print(f"  Artifishial Intelligence v3.3 (cone+perf+fe)")
+    print(f"  Artifishial Intelligence v3.4 (stream+restart)")
     print(f"  AR viewer : http://localhost:{args.port}")
     print(f"  WebSocket : ws://localhost:{args.port}/ws/state")
     print(f"  Mode      : "
-          f"{'LIVE' if args.live else 'REPLAY' if args.replay else 'SYNTHETIC'}")
+          f"{'LIVE' if args.live else 'STREAM' if args.stream else 'REPLAY' if args.replay else 'SYNTHETIC'}")
     print(f"{'='*52}\n")
 
     config = uvicorn.Config(app, host=args.host, port=args.port,
@@ -124,6 +194,11 @@ async def main():
     if args.live:
         await asyncio.gather(
             _live_loop(args.live, fusion, world_state),
+            server.serve(),
+        )
+    elif args.stream:
+        await asyncio.gather(
+            _stream_recording_loop(args.stream, fusion, world_state, stream_ctrl, inference_engine),
             server.serve(),
         )
     else:

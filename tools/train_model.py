@@ -77,15 +77,15 @@ def main():
         batch_size=args.batch,
         shuffle=True,
         num_workers=0,
-        pin_memory=True if device.type == "cuda" else False
+        pin_memory=False
     )
 
     val_loader = DataLoader(
         val_ds,
         batch_size=args.batch,
         shuffle=False,
-        num_workers=2,  # Parallel data loading
-        pin_memory=True if device.type == "cuda" else False
+        num_workers=0,  # Windows multiprocessing issue; use serial loading
+        pin_memory=False
     )
 
     # Create model

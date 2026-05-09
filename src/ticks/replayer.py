@@ -12,16 +12,34 @@ from typing import Iterator, List, Optional, Tuple
 from ticks.models import Tick, SonarTick, GpsTick
 
 def _row_to_tick(row: Tuple) -> Optional[Tick]:
-    _, ts, kind, payload_str = row
+    # Row layout: id, ts, kind, payload, blob (blob may be absent in legacy DBs)
+    if len(row) >= 5:
+        _, ts, kind, payload_str, blob = row
+    else:
+        _, ts, kind, payload_str = row
+        blob = None
     try:
         d = json.loads(payload_str)
     except (json.JSONDecodeError, TypeError):
         return None
 
     if kind == "sonar":
+        echo = b""
+        fwd  = None
+        if blob:
+            import struct as _struct
+            buf = bytes(blob)
+            n_echo = _struct.unpack_from("<I", buf, 0)[0]
+            echo = buf[4:4 + n_echo]
+            off  = 4 + n_echo
+            if off + 4 <= len(buf):
+                n_fwd = _struct.unpack_from("<I", buf, off)[0]
+                fwd_bytes = buf[off + 4:off + 4 + n_fwd]
+                fwd = fwd_bytes if n_fwd > 0 else None
         return Tick(ts=ts, sonar=SonarTick(
             ts=d["ts"], depth_m=d["depth_m"],
-            temp_c=d["temp_c"], signal_db=d["signal_db"], echo=b"",
+            temp_c=d["temp_c"], signal_db=d["signal_db"],
+            echo=echo, forward_scan=fwd,
         ))
     if kind == "gps":
         return Tick(ts=ts, gps=GpsTick(
@@ -52,7 +70,7 @@ class Replayer:
 
     def iter_all(self) -> Iterator[Tick]:
         cur = self._conn.execute(
-            "SELECT id, ts, kind, payload FROM ticks ORDER BY ts ASC")
+            "SELECT id, ts, kind, payload, blob FROM ticks ORDER BY ts ASC")
         for row in cur:
             t = _row_to_tick(row)
             if t is not None:
@@ -61,7 +79,7 @@ class Replayer:
     def iter_up_to(self, ts: float) -> Iterator[Tick]:
         """Yield all ticks with ts <= ts, in order. O(log N) seek via index."""
         cur = self._conn.execute(
-            "SELECT id, ts, kind, payload FROM ticks "
+            "SELECT id, ts, kind, payload, blob FROM ticks "
             "WHERE ts <= ? ORDER BY ts ASC", (ts,))
         for row in cur:
             t = _row_to_tick(row)
@@ -70,7 +88,7 @@ class Replayer:
 
     def iter_range(self, t_start: float, t_end: float) -> Iterator[Tick]:
         cur = self._conn.execute(
-            "SELECT id, ts, kind, payload FROM ticks "
+            "SELECT id, ts, kind, payload, blob FROM ticks "
             "WHERE ts >= ? AND ts <= ? ORDER BY ts ASC", (t_start, t_end))
         for row in cur:
             t = _row_to_tick(row)

@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Artifishial Intelligence v3.3 (cone+perf+fe)</title>
+  <title>Artifishial Intelligence v3.4 (stream+restart)</title>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -285,7 +285,7 @@
 
 <!-- HUD -->
 <div id="hud">
-  <div class="hud-badge hud-title">ARTIFISHIAL INTELLIGENCE v3.3 (cone+perf+fe)</div>
+  <div class="hud-badge hud-title">ARTIFISHIAL INTELLIGENCE v3.4 (stream+restart)</div>
   <div class="hud-row">
     <div class="hud-badge">POINTS <span id="hud-points">0</span></div>
     <div class="hud-badge">DEPTH <span id="hud-depth">—</span> m</div>
@@ -342,6 +342,15 @@
       <option value="8">8×</option>
     </select>
   </div>
+</div>
+
+<!-- Stream-restart button (live/stream mode only) -->
+<div id="stream-panel" style="
+  position: fixed; bottom: 14px; left: 50%; transform: translateX(-50%);
+  background: rgba(8,22,32,0.90); border: 1px solid #1e4a5c; border-radius: 6px;
+  padding: 8px 14px; display: none; gap: 8px; z-index: 10; align-items: center;
+">
+  <button class="rp-btn" id="btn-stream-restart" title="Reset world state and replay the recording from t=0">↻ REPLAY</button>
 </div>
 
 <!-- Pick tooltip -->
@@ -1307,6 +1316,8 @@ function connect() {
           document.getElementById('replay-time').textContent =
             `0:00 / ${fmtTime(msg.duration_s)}`;
         }
+        document.getElementById('stream-panel').style.display =
+          msg.stream_restart ? 'flex' : 'none';
         statusEl.textContent = isReplayMode ? 'REPLAY' : 'LIVE';
         break;
 
@@ -1373,6 +1384,10 @@ slider.addEventListener('mouseup',   () => {
 slider.addEventListener('touchend',  () => {
   sliderDragging = false;
   send({ type: 'seek', fraction: parseInt(slider.value) / 1000 });
+});
+
+document.getElementById('btn-stream-restart').addEventListener('click', () => {
+  send({ type: 'stream_restart' });
 });
 
 document.getElementById('btn-pause-play').addEventListener('click', () => {

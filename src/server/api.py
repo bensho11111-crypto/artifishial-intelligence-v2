@@ -34,6 +34,7 @@ import time
 from pathlib import Path
 from typing import Optional
 
+import numpy as np
 import orjson
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse
@@ -46,22 +47,27 @@ def _dumps(obj) -> bytes:
     """orjson-backed JSON encoder; returns raw bytes for ws.send_bytes."""
     return orjson.dumps(obj, option=orjson.OPT_SERIALIZE_NUMPY)
 
-app = FastAPI(title="Artifishial Intelligence v3.3 (cone+perf+fe)")
+app = FastAPI(title="Artifishial Intelligence v3.4 (stream+restart)")
 
 # ── Session state (injected by main.py) ──────────────────────────────────────
 
 _world_state     = None   # WorldState
 _replay_ctrl     = None   # ReplayController | None
+_stream_ctrl     = None   # StreamController | None  (live/stream restart)
 _ground_truth    = None   # GroundTruth | None
 _duration_s: Optional[float] = None
+_inference_engine = None   # InferenceEngine | None
 
 def set_session(world_state, replay_ctrl=None,
-                ground_truth=None, duration_s=None):
-    global _world_state, _replay_ctrl, _ground_truth, _duration_s
+                ground_truth=None, duration_s=None,
+                stream_ctrl=None, inference_engine=None):
+    global _world_state, _replay_ctrl, _ground_truth, _duration_s, _stream_ctrl, _inference_engine
     _world_state  = world_state
     _replay_ctrl  = replay_ctrl
     _ground_truth = ground_truth
     _duration_s   = duration_s
+    _stream_ctrl  = stream_ctrl
+    _inference_engine = inference_engine
 
 
 # ── WebSocket manager ─────────────────────────────────────────────────────────
@@ -109,6 +115,25 @@ def _rebuild_mesh(view) -> Optional[dict]:
     _mesh_cache = mesh
     _mesh_cache_floor_n = floor_n
     return mesh
+
+
+def _get_latest_floor_obs(world_state, ts):
+    """Find last observation with ts <= ts and is_floor == 1.0."""
+    d = world_state._data
+    if d is None or len(d) == 0:
+        return None
+    # Find last floor point at or before ts
+    # _IS_FLOOR == 7, _TS == 0
+    mask = (d[:, 0] <= ts) & (d[:, 7] > 0.5)
+    if not np.any(mask):
+        return None
+    idx = np.where(mask)[0][-1]
+    row = d[idx]
+    from types import SimpleNamespace
+    return SimpleNamespace(
+        east_m=row[1], north_m=row[2], depth_m=row[3],
+        speed_kts=row[4], heading_deg=row[5], confidence=row[6]
+    )
 
 
 def _build_update(current_ts: Optional[float] = None,
@@ -164,6 +189,15 @@ def _build_update(current_ts: Optional[float] = None,
         payload["echo"] = base64.b64encode(echo).decode("ascii")
     if prof: prof.stage("echo_lookup")
 
+    if _inference_engine is not None:
+        latest_obs = _get_latest_floor_obs(_world_state, ts)
+        if latest_obs is not None:
+            fwd = _world_state.forward_scan_at(ts) if ts is not None else None
+            preds = _inference_engine.push(latest_obs, fwd)
+            if preds is not None:
+                payload["catch_predictions"] = preds
+    if prof: prof.stage("inference")
+
     if _ground_truth is not None and ts is not None:
         payload["fish_positions"] = [
             {
@@ -187,9 +221,12 @@ def _build_update(current_ts: Optional[float] = None,
 
 
 async def _dispatch(msg: dict):
+    t = msg.get("type")
+    if t == "stream_restart" and _stream_ctrl is not None:
+        _stream_ctrl.request_restart()
+        return
     if _replay_ctrl is None:
         return
-    t = msg.get("type")
     if t == "seek":
         await _replay_ctrl.seek(float(msg.get("fraction", 0)))
     elif t == "pause":
@@ -210,6 +247,7 @@ async def ws_state(ws: WebSocket):
         "type":             "session_info",
         "duration_s":       _duration_s,
         "has_ground_truth": _ground_truth is not None,
+        "stream_restart":   _stream_ctrl is not None,
     }))
 
     if _ground_truth is not None:
