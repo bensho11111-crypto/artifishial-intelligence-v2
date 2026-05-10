@@ -29,11 +29,11 @@ eval_model() {
 
 # Evaluate each model
 eval_model "exp/larger-dataset (baseline)" \
-    "checkpoints_300/best.pt" \
+    "checkpoints_large/best.pt" \
     "eval_larger_dataset.json" &
 
 eval_model "exp/approach-detection (proximity labels)" \
-    "checkpoints_approach_detection/best.pt" \
+    "checkpoints_approach/best.pt" \
     "eval_approach_detection.json" &
 
 eval_model "exp/loss-tuning (aggressive loss)" \
@@ -41,7 +41,7 @@ eval_model "exp/loss-tuning (aggressive loss)" \
     "eval_loss_tuning.json" &
 
 eval_model "exp/class-resampling (weighted sampler)" \
-    "checkpoints_class_resampling/best.pt" \
+    "checkpoints_resampling/best.pt" \
     "eval_class_resampling.json" &
 
 wait

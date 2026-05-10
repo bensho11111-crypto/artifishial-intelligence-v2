@@ -12,14 +12,14 @@ class ModelConfig:
     beam_max_deg: float = 64.0
     az_half_deg: float = 30.0
 
-    # Model dimensions
-    d_sonar: int = 128       # SonarEncoder output dim
-    d_nav: int = 128         # NavEncoder output dim
-    d_model: int = 128       # Transformer hidden dim
-    n_heads: int = 4
-    d_ff: int = 512
-    n_layers: int = 4
-    dropout: float = 0.1
+    # Model dimensions (REDUCED - 10x smaller for better generalization)
+    d_sonar: int = 64        # SonarEncoder output dim (was 128)
+    d_nav: int = 64          # NavEncoder output dim (was 128)
+    d_model: int = 64        # Transformer hidden dim (was 128)
+    n_heads: int = 2         # Reduced from 4
+    d_ff: int = 256          # Reduced from 512
+    n_layers: int = 2        # Reduced from 4
+    dropout: float = 0.3     # Increased from 0.1 for regularization
 
     # Sequence
     window_local: int = 10   # short-range attention window (ticks)
@@ -33,10 +33,10 @@ class ModelConfig:
     # Training
     horizon_s: float = 300.0
     batch_size: int = 32
-    lr_peak: float = 3e-4
+    lr_peak: float = 1e-3        # Increased from 3e-4 for faster learning
     lr_finetune: float = 5e-5
-    weight_decay: float = 1e-4
-    grad_clip: float = 1.0
+    weight_decay: float = 1e-2   # Increased from 1e-4 for stronger regularization
+    grad_clip: float = 0.5       # Tighter clipping to stabilize training
     epochs_pretrain: int = 30
     epochs_finetune: int = 20
     val_fraction: float = 0.15

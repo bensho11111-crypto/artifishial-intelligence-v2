@@ -1,0 +1,9 @@
+Device: cpu
+Loading dataset from data/training_300/...
+Train samples: 30600, Val samples: 5400
+Computing sample weights...
+Weights computed: 487524 total, 15756 positive samples
+C:\Users\Ben\Desktop\artifishial_intelligence_v2\tools\..\src\ml\model.py:86: UserWarning: enable_nested_tensor is True, but self.use_nested_tensor is False because encoder_layer.norm_first was True
+  self.local_transformer = nn.TransformerEncoder(encoder_layer_local, num_layers=cfg.n_layers)
+C:\Users\Ben\Desktop\artifishial_intelligence_v2\tools\..\src\ml\model.py:97: UserWarning: enable_nested_tensor is True, but self.use_nested_tensor is False because encoder_layer.norm_first was True
+  self.lr_transformer = nn.TransformerEncoder(encoder_layer_lr, num_layers=cfg.n_layers)

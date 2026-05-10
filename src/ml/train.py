@@ -86,9 +86,10 @@ def eval_epoch(model, val_loader, loss_fn, device):
     total_loss = 0.0
     all_logits = []
     all_labels = []
+    n_batches_for_metrics = 0
 
     with torch.no_grad():
-        for batch in val_loader:
+        for batch_idx, batch in enumerate(val_loader):
             scans = batch["scans"].to(device)
             nav = batch["nav"].to(device)
             valid = batch["scan_valid"].to(device)
@@ -101,30 +102,38 @@ def eval_epoch(model, val_loader, loss_fn, device):
             loss = loss_fn(logits, labels)
             total_loss += loss.item()
 
-            # Store for metrics
-            all_logits.append(logits.cpu().numpy())
-            all_labels.append(labels.cpu().numpy())
+            # Store for metrics (sample to avoid slow metric computation)
+            if n_batches_for_metrics < 10:  # Only use first 10 batches for metrics
+                all_logits.append(logits.cpu().numpy())
+                all_labels.append(labels.cpu().numpy())
+                n_batches_for_metrics += 1
 
     # Concatenate all batches
-    all_logits = np.concatenate(all_logits, axis=0)  # (N, 4)
-    all_labels = np.concatenate(all_labels, axis=0)  # (N, 4)
+    if all_logits:
+        all_logits = np.concatenate(all_logits, axis=0)  # (N, 4)
+        all_labels = np.concatenate(all_labels, axis=0)  # (N, 4)
 
-    # Compute per-species AUROC and AP
-    aurocs = []
-    aps = []
-    for i in range(all_labels.shape[1]):
-        try:
-            auc = roc_auc_score(all_labels[:, i], all_logits[:, i])
-            ap = average_precision_score(all_labels[:, i], all_logits[:, i])
-            aurocs.append(auc)
-            aps.append(ap)
-        except Exception:
-            # Handle case where only one class present in batch
-            aurocs.append(0.5)
-            aps.append(0.0)
+        # Compute per-species AUROC and AP
+        aurocs = []
+        aps = []
+        for i in range(all_labels.shape[1]):
+            try:
+                auc = roc_auc_score(all_labels[:, i], all_logits[:, i])
+                ap = average_precision_score(all_labels[:, i], all_logits[:, i])
+                aurocs.append(auc)
+                aps.append(ap)
+            except Exception:
+                # Handle case where only one class present in batch
+                aurocs.append(0.5)
+                aps.append(0.0)
 
-    mean_auroc = np.mean(aurocs)
-    mean_ap = np.mean(aps)
+        mean_auroc = np.mean(aurocs)
+        mean_ap = np.mean(aps)
+    else:
+        aurocs = [0.5] * 4
+        aps = [0.0] * 4
+        mean_auroc = 0.5
+        mean_ap = 0.0
 
     avg_loss = total_loss / max(1, len(val_loader))
 

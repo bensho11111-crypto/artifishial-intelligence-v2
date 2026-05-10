@@ -132,10 +132,13 @@ def main():
     out_path.mkdir(parents=True, exist_ok=True)
 
     best_auroc = 0.0
+    print(f"Starting training: {args.epochs} epochs, {len(train_loader)} batches per epoch...", flush=True)
 
     for epoch in range(args.epochs):
+        print(f"Epoch {epoch+1}/{args.epochs}: Training...", flush=True)
         # Training
         train_loss = train_epoch(model, train_loader, loss_fn, optimizer, device, grad_clip=cfg.grad_clip)
+        print(f"Epoch {epoch+1}/{args.epochs}: Validating...", flush=True)
 
         # Validation
         val_loss, val_auroc, val_ap, aurocs, aps = eval_epoch(model, val_loader, loss_fn, device)

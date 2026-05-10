@@ -27,9 +27,9 @@ def format_metric(value):
         return "N/A"
     if isinstance(value, (int, float)):
         if value == float('inf'):
-            return "∞"
+            return "inf"
         elif value == float('-inf'):
-            return "-∞"
+            return "-inf"
         elif value != value:  # NaN check
             return "NaN"
         elif isinstance(value, float) and value < 1:

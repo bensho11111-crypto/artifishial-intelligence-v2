@@ -108,20 +108,28 @@ class FishCatchDataset(Dataset):
                 continue
 
             # Read .ticks and extract observations (GPS ticks at 1 Hz)
+            # GPS and sonar ticks are separate; maintain latest sonar data
             obs_list = []
+            latest_fwd_bytes = None
+            latest_depth = 0.0
             try:
                 with Replayer(str(session_path)) as rep:
                     for tick in rep.iter_all():
+                        # Update latest sonar data (available on sonar ticks at 5 Hz)
+                        if tick.sonar:
+                            latest_fwd_bytes = tick.sonar.forward_scan
+                            latest_depth = tick.sonar.depth_m
+
                         if tick.gps:  # only GPS ticks produce observations (1 Hz)
                             obs_list.append({
                                 "ts": tick.gps.ts,
                                 "east_m": tick.gps.lat,  # placeholder
                                 "north_m": tick.gps.lon,  # placeholder
-                                "depth_m": tick.sonar.depth_m if tick.sonar else 0.0,
+                                "depth_m": latest_depth,  # from most recent sonar
                                 "speed_kts": tick.gps.speed_kts,
                                 "heading_deg": tick.gps.heading_deg,
                                 "confidence": 0.7,  # placeholder
-                                "fwd_bytes": tick.sonar.forward_scan if tick.sonar else None,
+                                "fwd_bytes": latest_fwd_bytes,  # from most recent sonar
                             })
             except Exception as e:
                 # Skip sessions with read errors
