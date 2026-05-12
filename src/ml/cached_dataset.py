@@ -1,5 +1,5 @@
 """
-Cached synthetic dataset loader for HDF5-backed training.
+Cached synthetic dataset loader for NPZ or HDF5-backed training.
 """
 import h5py
 import numpy as np
@@ -9,31 +9,45 @@ from pathlib import Path
 
 
 class CachedSyntheticDataset(Dataset):
-    """Load training samples from HDF5 cache."""
+    """Load training samples from NPZ or HDF5 cache."""
 
     def __init__(self, cache_path: str, augment: bool = False):
         """
         Args:
-            cache_path: Path to HDF5 cache file
+            cache_path: Path to NPZ or HDF5 cache file
             augment: Whether to apply augmentation (heading rotation, speed jitter)
         """
         self.cache_path = Path(cache_path)
         self.augment = augment
 
-        # Open HDF5 and get size
-        with h5py.File(self.cache_path, "r") as f:
-            self.n_samples = f.attrs.get("n_samples", len(f["scans"]))
+        # Load data (NPZ or HDF5)
+        if str(cache_path).endswith(".npz"):
+            self.data = np.load(cache_path)
+            self.n_samples = len(self.data["scans"])
+            self.is_npz = True
+        else:
+            # HDF5 mode (lazy loading)
+            with h5py.File(self.cache_path, "r") as f:
+                self.n_samples = f.attrs.get("n_samples", len(f["scans"]))
+            self.is_npz = False
+            self.data = None
 
     def __len__(self):
         return self.n_samples
 
     def __getitem__(self, idx: int):
-        """Load sample from HDF5."""
-        with h5py.File(self.cache_path, "r") as f:
-            scans = torch.from_numpy(f["scans"][idx]).float()  # (60, 1, 24, 60, 128)
-            valids = torch.from_numpy(f["valids"][idx]).bool()  # (60,)
-            navs = torch.from_numpy(f["navs"][idx]).float()     # (60, 7)
-            labels = torch.from_numpy(f["labels"][idx]).float() # (4,)
+        """Load sample from NPZ or HDF5."""
+        if self.is_npz:
+            scans = torch.from_numpy(self.data["scans"][idx]).float()  # (60, 1, 24, 60, 128)
+            valids = torch.from_numpy(self.data["valids"][idx]).bool()  # (60,)
+            navs = torch.from_numpy(self.data["navs"][idx]).float()     # (60, 7)
+            labels = torch.from_numpy(self.data["labels"][idx]).float() # (4,)
+        else:
+            with h5py.File(self.cache_path, "r") as f:
+                scans = torch.from_numpy(f["scans"][idx]).float()
+                valids = torch.from_numpy(f["valids"][idx]).bool()
+                navs = torch.from_numpy(f["navs"][idx]).float()
+                labels = torch.from_numpy(f["labels"][idx]).float()
 
         # Optional: augmentation (heading rotation, speed jitter, temporal flip)
         if self.augment:
