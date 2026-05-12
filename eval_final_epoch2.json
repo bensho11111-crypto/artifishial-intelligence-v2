@@ -1,0 +1,77 @@
+{
+  "model": "checkpoints_real_synthetic_full/best.pt",
+  "duration_s": 300.0,
+  "seeds": [
+    0,
+    1,
+    2
+  ],
+  "results_by_seed": {
+    "0": {
+      "correlation": 0.17812387388388928,
+      "p_value": 0.5,
+      "mean_pred_by_distance": {
+        "0-20m": 1.7395207538443096,
+        "20-40m": 1.7276200950145721,
+        "40-60m": 0.0,
+        "60-100m": 0.0,
+        "100+m": 0.0
+      },
+      "distance_bins": [
+        "0-20m",
+        "20-40m",
+        "40-60m",
+        "60-100m",
+        "100+m"
+      ],
+      "n_observations": 240,
+      "mean_prediction": 1.7393224095304807,
+      "mean_distance_to_nearest_school": 11.459338047380957
+    },
+    "1": {
+      "correlation": 0.16533552609153457,
+      "p_value": 0.5,
+      "mean_pred_by_distance": {
+        "0-20m": 1.7381663777060428,
+        "20-40m": 1.726314514875412,
+        "40-60m": 0.0,
+        "60-100m": 0.0,
+        "100+m": 0.0
+      },
+      "distance_bins": [
+        "0-20m",
+        "20-40m",
+        "40-60m",
+        "60-100m",
+        "100+m"
+      ],
+      "n_observations": 240,
+      "mean_prediction": 1.7379688466588656,
+      "mean_distance_to_nearest_school": 11.459338047380957
+    },
+    "2": {
+      "correlation": 0.20417553308567063,
+      "p_value": 0.001,
+      "mean_pred_by_distance": {
+        "0-20m": 1.7458628628213526,
+        "20-40m": 1.7341219186782837,
+        "40-60m": 0.0,
+        "60-100m": 0.0,
+        "100+m": 0.0
+      },
+      "distance_bins": [
+        "0-20m",
+        "20-40m",
+        "40-60m",
+        "60-100m",
+        "100+m"
+      ],
+      "n_observations": 240,
+      "mean_prediction": 1.7456671804189683,
+      "mean_distance_to_nearest_school": 11.459338047380957
+    }
+  },
+  "mean_correlation": 0.18254497768703148,
+  "std_correlation": 0.016161603776745127,
+  "interpretation": "WEAK/NONE: Model predictions don't correlate with proximity (r=0.183)"
+}
