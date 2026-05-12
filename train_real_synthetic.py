@@ -90,11 +90,17 @@ def generate_real_batch(batch_size, window_size=WINDOW_SIZE, horizon_s=HORIZON_S
                     nearest_school.north_m - obs.north_m
                 ))
                 heading_delta = np.clip(target_heading - obs.heading_deg, -30, 30)
-                speed_kts = 3.5 if nearest_dist > 30 else 1.5  # Slow down when close
+                # Speed: fast when far, slow when approaching, stop when very close
+                if nearest_dist > 30:
+                    speed_kts = 3.5
+                elif nearest_dist > 8:
+                    speed_kts = 1.5
+                else:
+                    speed_kts = 0.0  # Stop over school
             else:
                 # Fallback: random walk
                 heading_delta = random.uniform(-30, 30)
-                speed_kts = random.uniform(2.0, 5.0)
+                speed_kts = random.uniform(0.0, 5.0)
 
             obs, catches = sim.step(heading_delta, speed_kts, dt=1.0)
 

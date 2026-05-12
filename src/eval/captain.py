@@ -28,14 +28,14 @@ class CaptainAgent(ABC):
 
 
 class RandomCaptain(CaptainAgent):
-    """Random walk baseline: uniform ±30° heading, uniform 2-5 kts speed."""
+    """Random walk baseline: uniform ±30° heading, uniform 0-5 kts speed."""
 
     def __init__(self, seed: int = 42):
         self._rng = random.Random(seed)
 
     def decide(self, state: dict, predictions: dict = None) -> tuple[float, float]:
         heading_delta = self._rng.uniform(-30.0, 30.0)
-        speed_kts = self._rng.uniform(2.0, 5.0)
+        speed_kts = self._rng.uniform(0.0, 5.0)
         return heading_delta, speed_kts
 
 
@@ -50,7 +50,7 @@ class StraightCaptain(CaptainAgent):
 
 
 class ModelGuidedCaptain(CaptainAgent):
-    """Gradient-following agent: smooths predictions and explores when rising."""
+    """Gradient-following agent: smooths predictions, explores when rising, speed based on confidence."""
 
     HISTORY_LEN = 5
     EXPLORE_TICKS = 10
@@ -70,6 +70,7 @@ class ModelGuidedCaptain(CaptainAgent):
         Gradient-following logic:
         - First 60 ticks: gentle spiral to explore
         - After: smooth predictions, exploit when stable/rising, explore when falling
+        - Speed: high prediction confidence -> slow/stop (exploit); low confidence -> fast (search)
         """
         t_index = int(state["t"])  # tick count
 
@@ -94,11 +95,17 @@ class ModelGuidedCaptain(CaptainAgent):
             else smoothed_sum
         )
 
+        # Determine speed based on prediction confidence
+        # High pred_sum -> low speed (exploit, even stop if very confident)
+        # Low pred_sum -> high speed (search)
+        # Map pred_sum [0, 4] to speed [4, 0] kts (since 4 species, max ~4.0)
+        speed_kts = max(0.0, 4.0 - smoothed_sum)
+
         # Normal mode
         if self._mode == "normal":
             if smoothed_sum >= last_pred_sum - self.DEAD_BAND:
                 # Rising or flat within dead-band: hold current heading
-                return 0.0, 3.5
+                return 0.0, speed_kts
             else:
                 # Falling: enter explore mode
                 self._mode = "explore"
@@ -113,16 +120,16 @@ class ModelGuidedCaptain(CaptainAgent):
             # Exit explore if prediction rose
             if smoothed_sum > last_pred_sum:
                 self._mode = "normal"
-                return heading_delta, 3.5
+                return heading_delta, speed_kts
 
             # Exit and flip direction if timer expired
             if self._explore_ticks >= self.EXPLORE_TICKS:
                 self._explore_dir = 1 - self._explore_dir
                 self._explore_ticks = 0
 
-            return heading_delta, 3.5
+            return heading_delta, speed_kts
 
-        return 0.0, 3.5
+        return 0.0, speed_kts
 
 
 class OracleCaptain(CaptainAgent):
@@ -169,10 +176,12 @@ class OracleCaptain(CaptainAgent):
         delta = (angle_to_school - boat_heading + 180) % 360 - 180
         heading_delta = max(-30.0, min(30.0, delta))
 
-        # Slow down inside school radius
-        if min_dist < nearest_school.radius_m:
-            speed_kts = 1.5
+        # Slow down / stop when very close to school
+        if min_dist < nearest_school.radius_m * 0.3:
+            speed_kts = 0.0  # Stop over school
+        elif min_dist < nearest_school.radius_m:
+            speed_kts = 1.5  # Slow inside radius
         else:
-            speed_kts = 3.5
+            speed_kts = 3.5  # Full speed when far
 
         return heading_delta, speed_kts

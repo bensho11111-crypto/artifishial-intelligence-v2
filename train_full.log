@@ -1,0 +1,44 @@
+======================================================================
+REAL SYNTHETIC TRAINING
+======================================================================
+Device: cpu
+Window size: 60s
+Horizon: 45.0s
+Batch size: 8
+Epochs: 20, Batches/epoch: 50
+
+Building model...
+  Parameters: 605,393
+
+Training on real synthetic data...
+======================================================================
+
+--- EPOCH 1/20 ---
+  Batch 10/50: loss=0.130426
+  Batch 20/50: loss=0.111778
+  Batch 30/50: loss=0.114415
+  Batch 40/50: loss=0.113271
+  Batch 50/50: loss=0.112826
+  Epoch avg loss: 0.116544
+  -> Saved: checkpoints_real_synthetic_full\best.pt
+
+--- EPOCH 2/20 ---
+  Batch 10/50: loss=0.111635
+  Batch 20/50: loss=0.112868
+  Batch 30/50: loss=0.113280
+  Batch 40/50: loss=0.112128
+  Batch 50/50: loss=0.110922
+  Epoch avg loss: 0.112167
+  -> Saved: checkpoints_real_synthetic_full\best.pt
+
+--- EPOCH 3/20 ---
+  Batch 10/50: loss=0.111381
+  Batch 20/50: loss=0.112772
+  Batch 30/50: loss=0.111428
+  Batch 40/50: loss=0.113012
+  Batch 50/50: loss=0.112428
+  Epoch avg loss: 0.112204
+
+--- EPOCH 4/20 ---
+  Batch 10/50: loss=0.112077
+  Batch 20/50: loss=0.111657

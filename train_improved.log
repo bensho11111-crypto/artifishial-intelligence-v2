@@ -1,0 +1,17 @@
+======================================================================
+REAL SYNTHETIC TRAINING
+======================================================================
+Device: cpu
+Window size: 60s
+Horizon: 45.0s
+Batch size: 16
+Epochs: 30, Batches/epoch: 50
+
+Building model...
+  Parameters: 605,393
+
+Training on real synthetic data...
+======================================================================
+
+--- EPOCH 1/30 ---
+  Batch 10/50: loss=0.130345

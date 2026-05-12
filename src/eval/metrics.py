@@ -342,7 +342,13 @@ def compute_proximity_correlation(
                 nearest_school.north_m - obs.north_m
             ))
             heading_delta = np.clip(target_heading - obs.heading_deg, -30, 30)
-            speed_kts = 3.5 if nearest_dist > 30 else 1.5
+            # Speed: fast when far, slow when approaching, stop when very close
+            if nearest_dist > 30:
+                speed_kts = 3.5
+            elif nearest_dist > 8:
+                speed_kts = 1.5
+            else:
+                speed_kts = 0.0  # Stop over school
         else:
             heading_delta = 0
             speed_kts = 3.5
