@@ -1,0 +1,200 @@
+======================================================================
+REAL SYNTHETIC TRAINING
+======================================================================
+Device: cpu
+Window size: 60s
+Horizon: 45.0s
+Batch size: 8
+Epochs: 5, Batches/epoch: 10
+
+Building model...
+  Parameters: 605,393
+
+Training on real synthetic data...
+======================================================================
+
+--- EPOCH 1/5 ---
+  Batch 10/10: loss=0.007171
+    Batch 20/50: loss=0.002011
+  Batch 30/50: loss=0.003131
+  Batch 40/50: loss=0.004727
+  Batch 50/50: loss=0.002956
+  Epoch avg loss: 0.004471
+  -> Saved: checkpoints_real_synthetic\best.pt
+
+--- EPOCH 2/20 ---
+  Batch 10/50: loss=0.003185
+  Batch 20/50: loss=0.003096
+  Batch 30/50: loss=0.002907
+  Batch 40/50: loss=0.002534
+  Batch 50/50: loss=0.002083
+  Epoch avg loss: 0.002761
+  -> Saved: checkpoints_real_synthetic\best.pt
+
+--- EPOCH 3/20 ---
+  Batch 10/50: loss=0.002769
+  Batch 20/50: loss=0.002420
+  Batch 30/50: loss=0.002349
+  Batch 40/50: loss=0.001777
+  Batch 50/50: loss=0.003201
+  Epoch avg loss: 0.002503
+  -> Saved: checkpoints_real_synthetic\best.pt
+
+--- EPOCH 4/20 ---
+  Batch 10/50: loss=0.001983
+  Batch 20/50: loss=0.002143
+  Batch 30/50: loss=0.002073
+  Batch 40/50: loss=0.002218
+  Batch 50/50: loss=0.002621
+  Epoch avg loss: 0.002208
+  -> Saved: checkpoints_real_synthetic\best.pt
+
+--- EPOCH 5/20 ---
+  Batch 10/50: loss=0.001524
+  Batch 20/50: loss=0.001592
+  Batch 30/50: loss=0.001670
+  Batch 40/50: loss=0.001371
+  Batch 50/50: loss=0.001672
+  Epoch avg loss: 0.001566
+  -> Saved: checkpoints_real_synthetic\best.pt
+
+--- EPOCH 6/20 ---
+  Batch 10/50: loss=0.001388
+  Batch 20/50: loss=0.002245
+  Batch 30/50: loss=0.001328
+  Batch 40/50: loss=0.001562
+  Batch 50/50: loss=0.001586
+  Epoch avg loss: 0.001622
+
+--- EPOCH 7/20 ---
+  Batch 10/50: loss=0.001248
+  Batch 20/50: loss=0.001614
+  Batch 30/50: loss=0.001291
+  Batch 40/50: loss=0.001193
+  Batch 50/50: loss=0.000881
+  Epoch avg loss: 0.001245
+  -> Saved: checkpoints_real_synthetic\best.pt
+
+--- EPOCH 8/20 ---
+  Batch 10/50: loss=0.001192
+  Batch 20/50: loss=0.001004
+  Batch 30/50: loss=0.001182
+  Batch 40/50: loss=0.000759
+  Batch 50/50: loss=0.000811
+  Epoch avg loss: 0.000990
+  -> Saved: checkpoints_real_synthetic\best.pt
+
+--- EPOCH 9/20 ---
+  Batch 10/50: loss=0.000722
+  Batch 20/50: loss=0.000822
+  Batch 30/50: loss=0.000735
+  Batch 40/50: loss=0.000729
+  Batch 50/50: loss=0.000512
+  Epoch avg loss: 0.000704
+  -> Saved: checkpoints_real_synthetic\best.pt
+
+--- EPOCH 10/20 ---
+  Batch 10/50: loss=0.000600
+  Batch 20/50: loss=0.000450
+  Batch 30/50: loss=0.000639
+  Batch 40/50: loss=0.000534
+  Batch 50/50: loss=0.000454
+  Epoch avg loss: 0.000536
+  -> Saved: checkpoints_real_synthetic\best.pt
+
+--- EPOCH 11/20 ---
+  Batch 10/50: loss=0.000618
+  Batch 20/50: loss=0.000487
+  Batch 30/50: loss=0.000466
+  Batch 40/50: loss=0.000477
+  Batch 50/50: loss=0.000380
+  Epoch avg loss: 0.000486
+  -> Saved: checkpoints_real_synthetic\best.pt
+
+--- EPOCH 12/20 ---
+  Batch 10/50: loss=0.000366
+  Batch 20/50: loss=0.000394
+  Batch 30/50: loss=0.000298
+  Batch 40/50: loss=0.000314
+  Batch 50/50: loss=0.000353
+  Epoch avg loss: 0.000345
+  -> Saved: checkpoints_real_synthetic\best.pt
+
+--- EPOCH 13/20 ---
+  Batch 10/50: loss=0.000303
+  Batch 20/50: loss=0.000315
+  Batch 30/50: loss=0.000304
+  Batch 40/50: loss=0.000369
+  Batch 50/50: loss=0.000269
+  Epoch avg loss: 0.000312
+  -> Saved: checkpoints_real_synthetic\best.pt
+
+--- EPOCH 14/20 ---
+  Batch 10/50: loss=0.000160
+  Batch 20/50: loss=0.000223
+  Batch 30/50: loss=0.000320
+  Batch 40/50: loss=0.000270
+  Batch 50/50: loss=0.000321
+  Epoch avg loss: 0.000259
+  -> Saved: checkpoints_real_synthetic\best.pt
+
+--- EPOCH 15/20 ---
+  Batch 10/50: loss=0.000290
+  Batch 20/50: loss=0.000206
+  Batch 30/50: loss=0.000236
+  Batch 40/50: loss=0.000255
+  Batch 50/50: loss=0.000281
+  Epoch avg loss: 0.000254
+  -> Saved: checkpoints_real_synthetic\best.pt
+
+--- EPOCH 16/20 ---
+  Batch 10/50: loss=0.000168
+  Batch 20/50: loss=0.000136
+  Batch 30/50: loss=0.000163
+  Batch 40/50: loss=0.000206
+  Batch 50/50: loss=0.000200
+  Epoch avg loss: 0.000175
+  -> Saved: checkpoints_real_synthetic\best.pt
+
+--- EPOCH 17/20 ---
+  Batch 10/50: loss=0.000142
+  Batch 20/50: loss=0.000148
+  Batch 30/50: loss=0.000106
+  Batch 40/50: loss=0.000145
+  Batch 50/50: loss=0.000165
+  Epoch avg loss: 0.000141
+  -> Saved: checkpoints_real_synthetic\best.pt
+
+--- EPOCH 18/20 ---
+  Batch 10/50: loss=0.000097
+  Batch 20/50: loss=0.000113
+  Batch 30/50: loss=0.000156
+  Batch 40/50: loss=0.000147
+  Batch 50/50: loss=0.000146
+  Epoch avg loss: 0.000132
+  -> Saved: checkpoints_real_synthetic\best.pt
+
+--- EPOCH 19/20 ---
+  Batch 10/50: loss=0.000108
+  Batch 20/50: loss=0.000149
+  Batch 30/50: loss=0.000109
+  Batch 40/50: loss=0.000098
+  Batch 50/50: loss=0.000099
+  Epoch avg loss: 0.000113
+  -> Saved: checkpoints_real_synthetic\best.pt
+
+--- EPOCH 20/20 ---
+  Batch 10/50: loss=0.000117
+  Batch 20/50: loss=0.000083
+  Batch 30/50: loss=0.000084
+  Batch 40/50: loss=0.000099
+  Batch 50/50: loss=0.000096
+  Epoch avg loss: 0.000096
+  -> Saved: checkpoints_real_synthetic\best.pt
+
+======================================================================
+TRAINING COMPLETE
+Best loss: 0.000096
+Checkpoint: checkpoints_real_synthetic/best.pt
+Horizon: 45.0s
+======================================================================

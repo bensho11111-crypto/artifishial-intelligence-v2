@@ -1,0 +1,44 @@
+C:\Users\Ben\Desktop\artifishial_intelligence_v2\tools\..\src\ml\inference.py:45: FutureWarning: You are using `torch.load` with `weights_only=False` (the current default value), which uses the default pickle module implicitly. It is possible to construct malicious pickle data which will execute arbitrary code during unpickling (See https://github.com/pytorch/pytorch/blob/main/SECURITY.md#untrusted-models for more details). In a future release, the default value for `weights_only` will be flipped to `True`. This limits the functions that could be executed during unpickling. Arbitrary objects will no longer be allowed to be loaded via this mode unless they are explicitly allowlisted by the user via `torch.serialization.add_safe_globals`. We recommend you start setting `weights_only=True` for any use case where you don't have full control of the loaded file. Please open an issue on GitHub for any issues related to this experimental feature.
+  ckpt = torch.load(model_path, map_location=device)
+Model: checkpoints_real_synthetic/best.pt
+Duration: 120.0s per episode
+Seeds: [0, 1, 2]
+
+Computing proximity correlations...
+  Seed 0... r=-0.890, p=0.0010
+  Seed 1... r=-0.923, p=0.0010
+  Seed 2... r=-0.923, p=0.0010
+
+================================================================================
+PROXIMITY CORRELATION SUMMARY
+================================================================================
+Model: checkpoints_real_synthetic/best.pt
+Mean correlation (across 3 seeds): -0.9123 ± 0.0156
+Interpretation: INVERTED: Model predicts HIGH when fish are FAR (r=-0.912)
+
+PER-SEED BREAKDOWN:
+--------------------------------------------------------------------------------
+Seed 0:
+  Correlation: -0.8903 (p=0.0010, n=60)
+  Mean prediction: 0.0178
+  Mean distance to nearest school: 50.4m
+
+Seed 1:
+  Correlation: -0.9232 (p=0.0010, n=60)
+  Mean prediction: 0.0181
+  Mean distance to nearest school: 50.4m
+
+Seed 2:
+  Correlation: -0.9235 (p=0.0010, n=60)
+  Mean prediction: 0.0176
+  Mean distance to nearest school: 50.4m
+
+MEAN PREDICTION BY DISTANCE (Seed 0):
+--------------------------------------------------------------------------------
+  0-20m          : 0.0000  
+  20-40m         : 0.0177  
+  40-60m         : 0.0178  
+  60-100m        : 0.0180  
+  100+m          : 0.0000  
+
+Report saved to: eval_seeking_captain.json

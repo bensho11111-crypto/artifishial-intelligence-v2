@@ -1,4 +1,42 @@
+======================================================================
+REAL SYNTHETIC TRAINING
+======================================================================
 Device: cpu
-Loading dataset from data/training_300/...
-Train samples: 30600, Val samples: 5400
-Computing sample weights...
+Window size: 60s
+Horizon: 45.0s
+Batch size: 8
+Epochs: 5, Batches/epoch: 10
+
+Building model...
+  Parameters: 605,393
+
+Training on real synthetic data...
+======================================================================
+
+--- EPOCH 1/5 ---
+  Batch 10/10: loss=0.140629
+  Epoch avg loss: 0.140629
+  -> Saved: checkpoints_real_synthetic\best.pt
+
+--- EPOCH 2/5 ---
+  Batch 10/10: loss=0.187030
+  Epoch avg loss: 0.187030
+
+--- EPOCH 3/5 ---
+  Batch 10/10: loss=0.182098
+  Epoch avg loss: 0.182098
+
+--- EPOCH 4/5 ---
+  Batch 10/10: loss=0.184174
+  Epoch avg loss: 0.184174
+
+--- EPOCH 5/5 ---
+  Batch 10/10: loss=0.179102
+  Epoch avg loss: 0.179102
+
+======================================================================
+TRAINING COMPLETE
+Best loss: 0.140629
+Checkpoint: checkpoints_real_synthetic/best.pt
+Horizon: 45.0s
+======================================================================

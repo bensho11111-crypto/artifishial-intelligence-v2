@@ -1,0 +1,33 @@
+{
+  "model": "checkpoints_real_synthetic/best.pt",
+  "duration_s": 120.0,
+  "seeds": [
+    0
+  ],
+  "results_by_seed": {
+    "0": {
+      "correlation": -0.6368346507833639,
+      "p_value": 0.001,
+      "mean_pred_by_distance": {
+        "0-20m": 0.0,
+        "20-40m": 1.493503617203754,
+        "40-60m": 1.4956192016601562,
+        "60-100m": 1.504922796379436,
+        "100+m": 0.0
+      },
+      "distance_bins": [
+        "0-20m",
+        "20-40m",
+        "40-60m",
+        "60-100m",
+        "100+m"
+      ],
+      "n_observations": 60,
+      "mean_prediction": 1.4982195456822713,
+      "mean_distance_to_nearest_school": 50.42535676876699
+    }
+  },
+  "mean_correlation": -0.6368346507833639,
+  "std_correlation": 0.0,
+  "interpretation": "INVERTED: Model predicts HIGH when fish are FAR (r=-0.637)"
+}

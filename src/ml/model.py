@@ -32,6 +32,62 @@ def causal_mask(size: int) -> torch.Tensor:
     return torch.triu(torch.ones(size, size, dtype=torch.bool), diagonal=1)
 
 
+class SimpleTransformer(nn.Module):
+    """
+    Simple transformer encoder without batch_first mask issues.
+    Uses MultiheadAttention with manual masking instead of TransformerEncoder.
+    """
+
+    def __init__(self, d_model: int, nhead: int, d_ff: int, n_layers: int, dropout: float = 0.1):
+        super().__init__()
+        self.d_model = d_model
+        self.n_layers = n_layers
+
+        self.layers = nn.ModuleList()
+        for _ in range(n_layers):
+            self.layers.append(nn.ModuleDict({
+                'self_attn': nn.MultiheadAttention(d_model, nhead, dropout=dropout, batch_first=True),
+                'norm1': nn.LayerNorm(d_model),
+                'ff': nn.Sequential(
+                    nn.Linear(d_model, d_ff),
+                    nn.GELU(),
+                    nn.Dropout(dropout),
+                    nn.Linear(d_ff, d_model),
+                ),
+                'norm2': nn.LayerNorm(d_model),
+                'dropout': nn.Dropout(dropout),
+            }))
+
+    def forward(self, x: torch.Tensor, mask: torch.Tensor = None) -> torch.Tensor:
+        """
+        Args:
+            x: (B, T, d_model)
+            mask: (T, T) boolean mask, True = masked position
+        Returns:
+            (B, T, d_model)
+        """
+        # Convert boolean mask to attention mask if provided
+        attn_mask = None
+        if mask is not None:
+            # Convert (T, T) boolean mask to float attention mask
+            # True = -inf, False = 0.0
+            attn_mask = torch.where(mask, torch.tensor(float('-inf')), torch.tensor(0.0)).float()
+            attn_mask = attn_mask.to(x.device).to(x.dtype)
+
+        for layer in self.layers:
+            # Self-attention with pre-norm
+            x_norm = layer['norm1'](x)
+            attn_out, _ = layer['self_attn'](x_norm, x_norm, x_norm, attn_mask=attn_mask)
+            x = x + layer['dropout'](attn_out)
+
+            # Feed-forward with pre-norm
+            x_norm = layer['norm2'](x)
+            ff_out = layer['ff'](x_norm)
+            x = x + layer['dropout'](ff_out)
+
+        return x
+
+
 class FishCatchTransformer(nn.Module):
     """
     Two-scale temporal transformer for fish catch prediction.
@@ -74,27 +130,21 @@ class FishCatchTransformer(nn.Module):
         self.pos_emb = nn.Embedding(cfg.window_size + 1, cfg.d_model)  # +1 for safety
 
         # Two-scale temporal attention streams
-        encoder_layer_local = nn.TransformerEncoderLayer(
+        # Using SimpleTransformer instead of TransformerEncoder to avoid Windows batch_first mask issues
+        self.local_transformer = SimpleTransformer(
             d_model=cfg.d_model,
             nhead=cfg.n_heads,
-            dim_feedforward=cfg.d_ff,
-            dropout=cfg.dropout,
-            activation='gelu',
-            norm_first=True,
-            batch_first=True
+            d_ff=cfg.d_ff,
+            n_layers=cfg.n_layers,
+            dropout=cfg.dropout
         )
-        self.local_transformer = nn.TransformerEncoder(encoder_layer_local, num_layers=cfg.n_layers)
-
-        encoder_layer_lr = nn.TransformerEncoderLayer(
+        self.lr_transformer = SimpleTransformer(
             d_model=cfg.d_model,
             nhead=cfg.n_heads,
-            dim_feedforward=cfg.d_ff,
-            dropout=cfg.dropout,
-            activation='gelu',
-            norm_first=True,
-            batch_first=True
+            d_ff=cfg.d_ff,
+            n_layers=cfg.n_layers,
+            dropout=cfg.dropout
         )
-        self.lr_transformer = nn.TransformerEncoder(encoder_layer_lr, num_layers=cfg.n_layers)
 
         # Combine streams
         self.combine_proj = nn.Linear(2 * cfg.d_model, cfg.d_model)
@@ -137,7 +187,8 @@ class FishCatchTransformer(nn.Module):
         for t in range(T):
             if scan_valid[:, t].all():
                 # All scans valid at this tick
-                s_emb = self.sonar_encoder(scans[:, t])  # (B, d_sonar)
+                scan_t = scans[:, t]  # (B, 1, 24, 60, 128)
+                s_emb = self.sonar_encoder(scan_t)  # (B, d_sonar)
             else:
                 # Some scans missing; use learned embedding
                 s_emb = self.sonar_encoder(None, batch_size=B)  # (B, d_sonar)

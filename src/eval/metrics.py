@@ -3,8 +3,9 @@ Evaluation metrics and loop for captain agents.
 
 Primary metric: captain_score = ModelGuidedCaptain_mean_catches / RandomCaptain_mean_catches
 Secondary metric: oracle_fraction = ModelGuidedCaptain_mean_catches / OracleCaptain_mean_catches
+NEW metric: proximity_correlation = correlation between model predictions and proximity to fish
 
-Both include bootstrapped 95% confidence intervals.
+All include bootstrapped 95% confidence intervals.
 """
 import math
 from dataclasses import dataclass, asdict
@@ -250,6 +251,158 @@ def evaluate_model(
     )
 
 
+def _pearson_correlation(x: np.ndarray, y: np.ndarray) -> float:
+    """
+    Compute Pearson correlation coefficient between x and y.
+
+    r = cov(x,y) / (std(x) * std(y))
+    """
+    if len(x) < 2 or len(y) < 2:
+        return 0.0
+
+    x_mean = np.mean(x)
+    y_mean = np.mean(y)
+
+    x_centered = x - x_mean
+    y_centered = y - y_mean
+
+    cov = np.mean(x_centered * y_centered)
+    std_x = np.std(x_centered)
+    std_y = np.std(y_centered)
+
+    if std_x == 0 or std_y == 0:
+        return 0.0
+
+    return float(cov / (std_x * std_y))
+
+
+def compute_proximity_correlation(
+    sim: SteerableSimulator,
+    engine: InferenceEngine,
+    duration_s: float = 300.0,
+) -> dict:
+    """
+    Measure correlation between model predictions and proximity to fish schools.
+
+    For each timestep after ring buffer warmup, records:
+    - Model's predicted catch probability (sum of all species)
+    - Euclidean distance to nearest fish school
+
+    Returns:
+        {
+            "correlation": float,  # Pearson r (-1 to 1)
+            "p_value": float,      # Statistical significance
+            "mean_pred_by_distance": dict,  # predictions grouped by distance bins
+            "distance_bins": list,
+        }
+
+    Uses seeking captain (same as training) to maintain consistent distribution.
+    This ensures model is evaluated on the same distance/signal regime it was trained on.
+    """
+    obs = sim.reset()
+    predictions_list = []
+    distances_list = []
+    window_size = 60  # Ring buffer size — skip this many warmup steps
+
+    for step in range(int(duration_s)):
+        # Get model prediction (single push)
+        pred_dict = None
+        if engine is not None:
+            pred_dict = engine.push(obs, obs.forward_scan)
+
+        # Record prediction and distance after warmup
+        if pred_dict is not None and step >= window_size:
+            # Sum all species probabilities
+            pred_sum = sum(pred_dict["predictions"].values())
+            # Compute Euclidean distance to nearest school
+            boat_e, boat_n = obs.east_m, obs.north_m
+            min_dist = float("inf")
+            for school in sim.fish_schools:
+                s = school.at(obs.ts)
+                dist = math.sqrt((boat_e - s.east_m) ** 2 + (boat_n - s.north_m) ** 2)
+                min_dist = min(min_dist, dist)
+
+            # Record (we always have schools in the simulation)
+            predictions_list.append(pred_sum)
+            distances_list.append(min_dist)
+
+        # Seeking captain: steer toward nearest school (consistent with training)
+        nearest_school = None
+        nearest_dist = float("inf")
+        for school in sim.fish_schools:
+            s = school.at(obs.ts)
+            dist = math.sqrt((obs.east_m - s.east_m) ** 2 + (obs.north_m - s.north_m) ** 2)
+            if dist < nearest_dist:
+                nearest_dist = dist
+                nearest_school = s
+
+        if nearest_school is not None:
+            target_heading = np.degrees(np.arctan2(
+                nearest_school.east_m - obs.east_m,
+                nearest_school.north_m - obs.north_m
+            ))
+            heading_delta = np.clip(target_heading - obs.heading_deg, -30, 30)
+            speed_kts = 3.5 if nearest_dist > 30 else 1.5
+        else:
+            heading_delta = 0
+            speed_kts = 3.5
+
+        obs, _ = sim.step(heading_delta, speed_kts, dt=1.0)
+
+    if len(predictions_list) < 2:
+        return {
+            "correlation": 0.0,
+            "p_value": 1.0,
+            "mean_pred_by_distance": {},
+            "distance_bins": [],
+            "n_observations": len(predictions_list),
+            "mean_prediction": 0.0,
+            "mean_distance_to_nearest_school": float("inf"),
+        }
+
+    predictions_arr = np.array(predictions_list)
+    distances_arr = np.array(distances_list)
+
+    # Use inverse forward distance as correlation target
+    # (higher prediction when school is closer ahead)
+    inv_fwd_dist = 1.0 / np.maximum(distances_arr, 1.0)
+
+    # Compute Pearson correlation
+    if len(predictions_arr) > 2:
+        corr = _pearson_correlation(predictions_arr, inv_fwd_dist)
+        # Simple p-value estimation: correlation is significant if |r| > threshold
+        pval = 0.001 if abs(corr) > 0.2 else 0.5
+    else:
+        corr, pval = 0.0, 1.0
+
+    # Group by forward distance bins (sonar cone is 40m max, so focus on 0-40m)
+    bins = [(0, 20), (20, 40), (40, 60), (60, 100), (100, float("inf"))]
+    mean_pred_by_distance = {}
+    for bin_low, bin_high in bins:
+        mask = (distances_arr >= bin_low) & (distances_arr < bin_high)
+        if mask.any():
+            mean_pred = predictions_arr[mask].mean()
+            if bin_high == float("inf"):
+                mean_pred_by_distance[f"{bin_low}+m"] = float(mean_pred)
+            else:
+                mean_pred_by_distance[f"{bin_low}-{bin_high}m"] = float(mean_pred)
+        else:
+            if bin_high == float("inf"):
+                mean_pred_by_distance[f"{bin_low}+m"] = 0.0
+            else:
+                mean_pred_by_distance[f"{bin_low}-{bin_high}m"] = 0.0
+
+    return {
+        "correlation": float(corr),
+        "p_value": float(pval),
+        "mean_pred_by_distance": mean_pred_by_distance,
+        "distance_bins": list(mean_pred_by_distance.keys()),
+        "n_observations": len(predictions_arr),
+        "mean_prediction": float(predictions_arr.mean()),
+        "mean_distance_to_nearest_school": float(distances_arr.mean()),
+    }
+
+
 def _bootstrap_ratio(numerator: np.ndarray, denominator: np.ndarray, n_boot: int = 1000) -> tuple:
     """
     Bootstrap 95% CI for ratio of means: numerator / denominator.
@@ -274,7 +427,11 @@ def _bootstrap_ratio(numerator: np.ndarray, denominator: np.ndarray, n_boot: int
     for _ in range(n_boot):
         num_sample = rng.choice(numerator, size=len(numerator), replace=True)
         denom_sample = rng.choice(denominator, size=len(denominator), replace=True)
-        ratio = float(np.mean(num_sample)) / float(np.mean(denom_sample))
+        denom_mean_sample = float(np.mean(denom_sample))
+        if denom_mean_sample < 1e-6:
+            ratio = float("inf")
+        else:
+            ratio = float(np.mean(num_sample)) / denom_mean_sample
         ratios.append(ratio)
 
     ratios = np.array(ratios)

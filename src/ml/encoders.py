@@ -93,7 +93,9 @@ class GeoSonarEncoder(nn.Module):
         B = scan.shape[0]
 
         # Step 1: Project geometry
-        geo_proj = self.geo_proj(self.geo)  # (1, 4, 24, 60, 128)
+        # Ensure geo is on the same device as scan
+        geo = self.geo.to(scan.device) if self.geo.device != scan.device else self.geo
+        geo_proj = self.geo_proj(geo)  # (1, 4, 24, 60, 128)
 
         # Step 2: Concatenate scan and expanded geometry projection
         geo_proj_expanded = geo_proj.expand(B, -1, -1, -1, -1)  # (B, 4, 24, 60, 128)

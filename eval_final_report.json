@@ -1,0 +1,77 @@
+{
+  "model": "checkpoints_real_synthetic/best.pt",
+  "duration_s": 120.0,
+  "seeds": [
+    0,
+    1,
+    2
+  ],
+  "results_by_seed": {
+    "0": {
+      "correlation": -0.5127244577614317,
+      "p_value": 0.001,
+      "mean_pred_by_distance": {
+        "0-20m": 0.0,
+        "20-40m": 0.0,
+        "40-60m": 0.0,
+        "60-100m": 0.0,
+        "100+m": 0.3242988482117653
+      },
+      "distance_bins": [
+        "0-20m",
+        "20-40m",
+        "40-60m",
+        "60-100m",
+        "100+m"
+      ],
+      "n_observations": 60,
+      "mean_prediction": 0.3242988482117653,
+      "mean_distance_to_nearest_school": 158.6087590202116
+    },
+    "1": {
+      "correlation": -0.9477799365467497,
+      "p_value": 0.001,
+      "mean_pred_by_distance": {
+        "0-20m": 0.0,
+        "20-40m": 0.0,
+        "40-60m": 0.0,
+        "60-100m": 0.25480785278173596,
+        "100+m": 0.2562870357898956
+      },
+      "distance_bins": [
+        "0-20m",
+        "20-40m",
+        "40-60m",
+        "60-100m",
+        "100+m"
+      ],
+      "n_observations": 60,
+      "mean_prediction": 0.25596654613812764,
+      "mean_distance_to_nearest_school": 129.26126779091703
+    },
+    "2": {
+      "correlation": -0.49612144625554294,
+      "p_value": 0.001,
+      "mean_pred_by_distance": {
+        "0-20m": 0.0,
+        "20-40m": 0.0,
+        "40-60m": 0.0,
+        "60-100m": 0.0,
+        "100+m": 0.2595692346493403
+      },
+      "distance_bins": [
+        "0-20m",
+        "20-40m",
+        "40-60m",
+        "60-100m",
+        "100+m"
+      ],
+      "n_observations": 60,
+      "mean_prediction": 0.2595692346493403,
+      "mean_distance_to_nearest_school": 150.89503378044128
+    }
+  },
+  "mean_correlation": -0.6522086135212415,
+  "std_correlation": 0.20911036997090504,
+  "interpretation": "INVERTED: Model predicts HIGH when fish are FAR (r=-0.652)"
+}

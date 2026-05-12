@@ -1,0 +1,21 @@
+{
+  "model": "checkpoints_real_synthetic/best.pt",
+  "duration_s": 60.0,
+  "seeds": [
+    0
+  ],
+  "results_by_seed": {
+    "0": {
+      "correlation": 0.0,
+      "p_value": 1.0,
+      "mean_pred_by_distance": {},
+      "distance_bins": [],
+      "n_observations": 0,
+      "mean_prediction": 0.0,
+      "mean_distance_to_nearest_school": Infinity
+    }
+  },
+  "mean_correlation": 0.0,
+  "std_correlation": 0.0,
+  "interpretation": "WEAK/NONE: Model predictions don't correlate with proximity (r=0.000)"
+}
