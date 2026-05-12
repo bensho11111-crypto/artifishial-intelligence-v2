@@ -131,13 +131,18 @@ def main():
     print()
     sys.stdout.flush()
 
-    # Create HDF5 file with datasets
+    # Create HDF5 file with datasets (chunked to avoid pre-allocation)
     print("Creating HDF5 file...")
     with h5py.File(output_path, "w") as f:
-        f.create_dataset("scans", shape=(args.n_samples, 60, 1, 24, 60, 128), dtype=np.float32)
-        f.create_dataset("valids", shape=(args.n_samples, 60), dtype=bool)
-        f.create_dataset("navs", shape=(args.n_samples, 60, 7), dtype=np.float32)
-        f.create_dataset("labels", shape=(args.n_samples, 4), dtype=np.float32)
+        # Use chunked datasets to avoid pre-allocating 4TB+
+        f.create_dataset("scans", shape=(args.n_samples, 60, 1, 24, 60, 128), dtype=np.float32,
+                        chunks=(1, 60, 1, 24, 60, 128))
+        f.create_dataset("valids", shape=(args.n_samples, 60), dtype=bool,
+                        chunks=(10, 60))
+        f.create_dataset("navs", shape=(args.n_samples, 60, 7), dtype=np.float32,
+                        chunks=(10, 60, 7))
+        f.create_dataset("labels", shape=(args.n_samples, 4), dtype=np.float32,
+                        chunks=(100, 4))
         f.attrs["n_samples"] = args.n_samples
         f.attrs["window_size"] = WINDOW_SIZE
         f.attrs["horizon_s"] = HORIZON_S
