@@ -28,12 +28,12 @@ import math
 # Configuration
 WINDOW_SIZE = 60  # observation window (ticks/seconds)
 HORIZON_S = 45.0  # prediction horizon (seconds)
-BATCH_SIZE = 8
-EPOCHS = 20  # Full training: 20 epochs
-BATCHES_PER_EPOCH = 50  # 50 batches per epoch (8K training samples total)
+BATCH_SIZE = 16  # Increased from 8 for better stability
+EPOCHS = 30  # Extended from 20 for full convergence
+BATCHES_PER_EPOCH = 50  # 50 batches per epoch
 DEVICE = "cpu"
 LR = 3e-4
-CHECKPOINT_DIR = Path("checkpoints_real_synthetic_full")
+CHECKPOINT_DIR = Path("checkpoints_real_synthetic_improved")
 
 # Species names (must match model config)
 SPECIES_NAMES = ["largemouth bass", "rainbow trout", "common carp", "bluegill bream"]
