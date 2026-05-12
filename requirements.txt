@@ -14,6 +14,7 @@ torch>=2.3.0
 
 # ML / Data
 scikit-learn>=1.3.0
+h5py>=3.10.0
 
 # Storage
 # (SQLite is stdlib — no extra package needed)
