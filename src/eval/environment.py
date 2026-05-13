@@ -17,7 +17,7 @@ class SteerableSimulator:
     Step-by-step fishing simulation with injectable boat control.
 
     Boat state: (east_m, north_m, heading_deg, speed_kts, t)
-    Catches: Poisson λ = density × overlap × 0.08 per school per step
+    Catches: Poisson λ = density × overlap × 0.35 per school per step
     """
 
     SOFT_LIMIT = 300.0
@@ -101,7 +101,8 @@ class SteerableSimulator:
             self._floor, schools_now, fwd_rng
         )
 
-        # 4. Catch events: Poisson λ = density × overlap × 0.08
+        # 4. Catch events: Poisson λ = density × overlap × 0.35
+        # Increased from 0.08 to generate ~5-10% positive labels in training data
         catches = []
         for s in schools_now:
             dist = math.sqrt(
@@ -109,7 +110,7 @@ class SteerableSimulator:
             )
             if dist < s.radius_m:
                 overlap = 1.0 - dist / s.radius_m
-                lam = s.density * overlap * 0.08
+                lam = s.density * overlap * 0.35
                 if self._rng.random() < 1.0 - math.exp(-lam):
                     catches.append({
                         "ts": self._t,
