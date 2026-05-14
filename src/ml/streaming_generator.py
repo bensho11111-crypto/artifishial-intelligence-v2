@@ -121,15 +121,15 @@ def worker_main(worker_id, n_workers, queue_dir, batch_size, max_queue_depth, st
 
     seed = worker_id
     counter = 0
-    log.info(f"Worker started, initial seed={seed}")
+    log.info(f"Worker {worker_id} started: seed={seed}, n_workers={n_workers}, batch_size={batch_size}, max_queue={max_queue_depth}")
 
     while not stop_event.is_set():
         try:
-            # Back-pressure: limit queue depth (check only batch_ files, not temps)
-            while len(list(queue_dir.glob("batch_*.npz"))) >= max_queue_depth:
-                if stop_event.is_set():
-                    return
-                time.sleep(0.5)
+            # Check queue depth but don't block: generate anyway regardless of queue size
+            # The trainer will catch up eventually; blocking here can deadlock the system
+            queue_files = len(list(queue_dir.glob("batch_*.npz")))
+            if queue_files >= max_queue_depth:
+                log.warning(f"Queue at max depth ({queue_files}/{max_queue_depth}), continuing anyway to avoid deadlock")
 
             # Generate batch of samples
             samples = []
@@ -164,13 +164,14 @@ def worker_main(worker_id, n_workers, queue_dir, batch_size, max_queue_depth, st
                 )
 
                 # Force flush to disk to ensure file is complete
+                # Use os.O_RDWR to open for both read and write, since the file was just written
                 try:
-                    fd = os.open(tmp_path, os.O_RDONLY | os.O_BINARY)
+                    fd = os.open(tmp_path, os.O_RDWR | os.O_BINARY)
                     try:
                         os.fsync(fd)
                     finally:
                         os.close(fd)
-                except Exception:
+                except Exception as e:
                     pass  # If fsync fails, still try rename
 
                 # Stagger worker rename operations with random delay to reduce Windows filesystem collisions
@@ -196,10 +197,11 @@ def worker_main(worker_id, n_workers, queue_dir, batch_size, max_queue_depth, st
                     try:
                         os.replace(tmp_path, dest_path_str)
                         elapsed = time.time() - retry_start_time
+                        queue_depth_now = len(list(queue_dir.glob("batch_*.npz")))
                         if attempt > 0:
-                            log.info(f"Batch {counter} written after retry {attempt + 1} (total_time={elapsed:.2f}s, file_size={os.path.getsize(dest_path_str)})")
+                            log.info(f"Batch {counter} written after retry {attempt + 1} (time={elapsed:.2f}s, size={os.path.getsize(dest_path_str)}, queue_depth={queue_depth_now})")
                         else:
-                            log.info(f"Batch {counter} written ({out_path.name})")
+                            log.info(f"Batch {counter} written: {out_path.name} (queue_depth={queue_depth_now})")
                         break
                     except OSError as e:
                         # Log destination status on each retry
@@ -261,11 +263,28 @@ class StreamingDataLoader:
         return self.n_steps
 
     def _wait_for_batch_file(self, timeout=300):
-        """Poll for next batch file, delete after returning."""
+        """Poll for next batch file, delete after returning.
+
+        Logs file size instability explicitly, tracks elapsed time, and provides
+        detailed error messages on timeout.
+        """
+        import logging
+        log = logging.getLogger("StreamingDataLoader")
+
         start_time = time.time()
+        max_queue_depth = 16  # Should match train_streaming.py --queue-depth default
+        warning_logged = False
+        instability_count = 0
+        files_seen_count = 0
+
         while True:
-            if time.time() - start_time > timeout:
-                raise TimeoutError(f"No batch file after {timeout}s")
+            elapsed = time.time() - start_time
+            if elapsed > timeout:
+                queue_depth = len(list(self.queue_dir.glob("batch_*.npz")))
+                log.error(f"TIMEOUT after {timeout}s waiting for batch file. Queue depth={queue_depth}/{max_queue_depth}, files_found={files_seen_count}, size_unstable_count={instability_count}")
+                if queue_depth >= max_queue_depth:
+                    log.error("Queue is at max depth - workers may be deadlocked or trainer too slow")
+                raise TimeoutError(f"No batch file after {timeout}s (queue_depth={queue_depth}, files_found={files_seen_count}, size_unstable_count={instability_count})")
 
             # Only match batch files (batch_XX_XXXXXX.npz), not temp files (tmpXXXXXXXX.npz)
             files = sorted(self.queue_dir.glob("batch_*.npz"))
@@ -279,9 +298,27 @@ class StreamingDataLoader:
                         time.sleep(0.5)  # Brief wait for atomic rename to complete
                         size2 = f.stat().st_size
                         if size1 == size2:  # File is stable
+                            log.info(f"Batch file ready: {f.name} (size={size1} bytes, found_after={elapsed:.1f}s, instability_checks={instability_count})")
                             return f
-                except OSError:
-                    pass  # File deleted concurrently
+                        else:
+                            # Explicit logging when size instability detected
+                            instability_count += 1
+                            files_seen_count += 1
+                            if instability_count <= 10:  # Log first 10 to avoid spam
+                                log.info(f"File size unstable for {f.name}: {size1} -> {size2} bytes (check #{instability_count}, elapsed={elapsed:.1f}s)")
+                            elif instability_count == 11:
+                                log.warning(f"Size instability continuing for {f.name}, suppressing further logs (elapsed={elapsed:.1f}s)")
+                except OSError as e:
+                    # File deleted concurrently, will retry with next iteration
+                    log.debug(f"File stat failed (likely deleted): {e}")
+                    files_seen_count += 1
+                    pass
+            else:
+                # Log warning if waiting too long for first file (workers take ~10-15s to generate first batch)
+                if elapsed > 20 and not warning_logged:
+                    log.warning(f"No batch files available after {elapsed:.1f}s - workers may still be starting up")
+                    warning_logged = True
+
             time.sleep(0.1)
 
     def __iter__(self):
