@@ -169,8 +169,8 @@ def worker_main(worker_id, n_workers, queue_dir, batch_size, max_queue_depth, st
                 except Exception:
                     pass  # If fsync fails, still try rename
 
-                # Atomic rename
-                os.rename(tmp_path, str(out_path))
+                # Atomic rename (os.replace works cross-platform, handles existing files on Windows)
+                os.replace(tmp_path, str(out_path))
                 log.info(f"Batch {counter} written ({out_path.name})")
             except Exception as e:
                 log.error(f"Error writing batch {counter}: {e}")

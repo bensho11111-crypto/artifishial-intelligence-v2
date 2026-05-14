@@ -16,6 +16,9 @@ from pathlib import Path
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingLR
 
+# Critical: must be at module level on Windows for multiprocessing
+multiprocessing.freeze_support()
+
 sys.path.insert(0, "src")
 
 from ml.config import ModelConfig
@@ -103,7 +106,6 @@ def main():
     args = parser.parse_args()
 
     # Setup
-    multiprocessing.freeze_support()
     device = torch.device(args.device)
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
