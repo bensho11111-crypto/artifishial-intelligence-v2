@@ -7,6 +7,7 @@ Minimal disk footprint (~1 GB max queue), 4× faster than single-process.
 import argparse
 import dataclasses
 import datetime
+import logging
 import multiprocessing
 import numpy as np
 import os
@@ -108,6 +109,17 @@ def main():
     parser.add_argument("--device", type=str, default="cpu", help="torch device")
     args = parser.parse_args()
 
+    # Setup logging
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        handlers=[
+            logging.FileHandler('train_streaming.log'),
+            logging.StreamHandler(sys.stdout)
+        ]
+    )
+    log = logging.getLogger("train_streaming")
+
     # Setup
     device = torch.device(args.device)
     out_dir = Path(args.out)
@@ -118,15 +130,17 @@ def main():
     queue_dir = Path(f"data/gen_queue_{ts}")
     queue_dir.mkdir(parents=True, exist_ok=True)
 
-    # Optional: clean up old queue directories (older than 1 day, keep recent ones for debugging)
+    # Clean up old queue directories (older than 1 hour). Each run already creates a fresh
+    # timestamped dir, so anything older than an hour is leftover from a prior run.
+    # Skip our own newly-created queue_dir.
     base_queue_dir = Path("data")
     if base_queue_dir.exists():
         now = time.time()
         for old_queue in base_queue_dir.glob("gen_queue_*"):
-            if old_queue.is_dir():
+            if old_queue.is_dir() and old_queue.resolve() != queue_dir.resolve():
                 mtime = os.path.getmtime(str(old_queue))
                 age_seconds = now - mtime
-                if age_seconds > 86400:  # 1 day
+                if age_seconds > 3600:  # 1 hour
                     try:
                         shutil.rmtree(str(old_queue))
                         print(f"Cleaned old queue dir: {old_queue.name}")
@@ -195,7 +209,13 @@ def main():
     # Training loop
     try:
         for epoch in range(start_epoch, args.epochs + 1):
+            log.info(f"{'='*70}")
+            log.info(f"EPOCH {epoch}/{args.epochs} starting")
+            queue_depth_at_start = len(list(queue_dir.glob("batch_*.npz")))
+            log.info(f"Queue depth at epoch start: {queue_depth_at_start} files")
+
             # Training
+            epoch_start_time = time.time()
             train_loader = StreamingDataLoader(
                 queue_dir,
                 n_steps=args.steps,
@@ -211,6 +231,9 @@ def main():
                 grad_clip=1.0,
             )
 
+            epoch_elapsed = time.time() - epoch_start_time
+            log.info(f"Epoch {epoch} training completed in {epoch_elapsed:.1f}s")
+
             # Validation
             val_loader = FixedNpzLoader(
                 val_path,
@@ -222,11 +245,13 @@ def main():
                 model, val_loader, loss_fn, device
             )
 
+            queue_depth_at_end = len(list(queue_dir.glob("batch_*.npz")))
             print(
                 f"Epoch {epoch:2d}/{args.epochs}  "
                 f"loss={train_loss:.4f}  val_auroc={val_auroc:.4f}  "
-                f"queue={len(list(queue_dir.glob('*.npz')))} files"
+                f"queue={queue_depth_at_end} files"
             )
+            log.info(f"Epoch {epoch} summary: loss={train_loss:.4f}, val_auroc={val_auroc:.4f}, queue_depth={queue_depth_at_end}")
 
             # Checkpoint if best (or first epoch, or nan val_auroc)
             is_best = (np.isnan(val_auroc) and np.isnan(best_val_auroc)) or (
@@ -254,12 +279,22 @@ def main():
     except KeyboardInterrupt:
         print("\nInterrupted, shutting down...")
     finally:
-        # Cleanup
+        # Stop workers first so they release any file handles in queue_dir
         stop_event.set()
         for p in workers:
             p.join(timeout=2)
             if p.is_alive():
                 p.terminate()
+
+        # Remove this run's queue dir — workers no longer need it and stale .npz
+        # files accumulate fast (~70 MB each, ~16 files at any moment).
+        try:
+            if queue_dir.exists():
+                shutil.rmtree(str(queue_dir))
+                print(f"Removed queue dir: {queue_dir.name}")
+        except (OSError, PermissionError) as e:
+            print(f"Could not remove {queue_dir.name}: {e} (delete manually later)")
+
         print("Done.")
 
 

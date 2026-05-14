@@ -187,28 +187,30 @@ class FishCatchTransformer(nn.Module):
         """
         B, T = nav.shape[0], nav.shape[1]
 
-        # Step 1: Per-tick embeddings
-        # Process sonar scans frame-by-frame
-        sonar_embs = []
-        for t in range(T):
-            if scan_valid[:, t].all():
-                # All scans valid at this tick
-                scan_t = scans[:, t]  # (B, 1, 24, 60, 128)
-                s_emb = self.sonar_encoder(scan_t)  # (B, d_sonar)
-            else:
-                # Some scans missing; use learned embedding
-                s_emb = self.sonar_encoder(None, batch_size=B)  # (B, d_sonar)
-            sonar_embs.append(s_emb)
+        # Step 1: Per-tick embeddings (vectorized over B*T to avoid 60x deeper autograd graph)
+        # Single batched sonar encoder call: reshape (B, T, 1, 24, 60, 128) -> (B*T, 1, 24, 60, 128)
+        scans_flat = scans.reshape(B * T, 1, scans.shape[-3], scans.shape[-2], scans.shape[-1])
+        sonar_flat = self.sonar_encoder(scans_flat)  # (B*T, d_sonar)
+        sonar_embs_BT = sonar_flat.reshape(B, T, -1)  # (B, T, d_sonar)
 
-        sonar_embs = torch.stack(sonar_embs, dim=0)  # (T, B, d_sonar)
+        # Per-sample-per-tick masking for invalid scans (fixes latent bug where
+        # any invalid scan at tick t replaced ALL samples' embeddings at that tick)
+        invalid_mask = ~scan_valid  # (B, T)
+        if invalid_mask.any():
+            missing = self.sonar_encoder.missing_scan_embedding.view(1, 1, -1)  # (1, 1, d_sonar)
+            sonar_embs_BT = torch.where(
+                invalid_mask.unsqueeze(-1),
+                missing.expand_as(sonar_embs_BT),
+                sonar_embs_BT,
+            )
 
-        # Fuse sonar and nav frame-by-frame
-        per_tick_fused = []
-        for t in range(T):
-            fused = self.nav_encoder(nav[:, t], sonar_embs[t])  # (B, d_model)
-            per_tick_fused.append(fused)
+        sonar_embs = sonar_embs_BT.permute(1, 0, 2).contiguous()  # (T, B, d_sonar)
 
-        tick_emb = torch.stack(per_tick_fused, dim=0)  # (T, B, d_model)
+        # Vectorized nav encoder over B*T (NavEncoder does per-element work: MLP + 1x1 attn + residual)
+        nav_flat = nav.reshape(B * T, 7)
+        sonar_flat_for_nav = sonar_embs_BT.reshape(B * T, -1)  # (B*T, d_sonar)
+        fused_flat = self.nav_encoder(nav_flat, sonar_flat_for_nav)  # (B*T, d_model)
+        tick_emb = fused_flat.reshape(B, T, -1).permute(1, 0, 2).contiguous()  # (T, B, d_model)
 
         # Add positional embeddings
         pos_indices = torch.arange(T, device=tick_emb.device)

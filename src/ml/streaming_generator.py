@@ -125,11 +125,21 @@ def worker_main(worker_id, n_workers, queue_dir, batch_size, max_queue_depth, st
 
     while not stop_event.is_set():
         try:
-            # Check queue depth but don't block: generate anyway regardless of queue size
-            # The trainer will catch up eventually; blocking here can deadlock the system
-            queue_files = len(list(queue_dir.glob("batch_*.npz")))
-            if queue_files >= max_queue_depth:
-                log.warning(f"Queue at max depth ({queue_files}/{max_queue_depth}), continuing anyway to avoid deadlock")
+            # Back-pressure: wait while queue is full, but use stop_event.wait() so we
+            # remain responsive to shutdown and don't tight-poll. This is *not* the
+            # previous deadlock-prone pattern (a tight `while … time.sleep(0.5)` loop
+            # that ignored stop_event between checks); stop_event.wait() returns True
+            # immediately when the trainer signals shutdown.
+            backoff_logged = False
+            while not stop_event.is_set():
+                queue_files = len(list(queue_dir.glob("batch_*.npz")))
+                if queue_files < max_queue_depth:
+                    break
+                if not backoff_logged:
+                    log.info(f"Queue full ({queue_files}/{max_queue_depth}), waiting for trainer to consume")
+                    backoff_logged = True
+                if stop_event.wait(timeout=2.0):
+                    return  # stop signalled while waiting
 
             # Generate batch of samples
             samples = []
@@ -323,43 +333,74 @@ class StreamingDataLoader:
 
     def __iter__(self):
         """Yield n_steps batches of batch_size samples each."""
+        import logging
+        log = logging.getLogger("StreamingDataLoader")
+
         pending_samples = []
+        processed_files = set()  # Track files we've already processed to prevent re-reading
 
         for step_idx in range(self.n_steps):
             # Accumulate samples until we have batch_size
             while len(pending_samples) < self.batch_size:
                 batch_file = self._wait_for_batch_file()
+                batch_file_name = batch_file.name
+
+                # SAFETY CHECK: Prevent reading the same file twice
+                if batch_file_name in processed_files:
+                    log.error(f"DUPLICATE FILE READ DETECTED: {batch_file_name} was already processed! Skipping to prevent infinite loop. This indicates a deletion failure.")
+                    try:
+                        batch_file.unlink()
+                    except OSError as e:
+                        log.error(f"Failed to delete stuck file {batch_file_name}: {e}")
+                    time.sleep(0.1)
+                    continue
+
                 try:
                     data = np.load(batch_file, allow_pickle=False)
                 except (EOFError, ValueError, OSError, zipfile.BadZipFile) as e:
                     # File was incomplete, corrupted, or deleted, try next
+                    log.warning(f"Failed to load batch file {batch_file_name}: {e}, attempting cleanup")
                     try:
                         batch_file.unlink()
-                    except OSError:
-                        pass
+                        log.info(f"Deleted corrupted file: {batch_file_name}")
+                    except OSError as delete_err:
+                        log.error(f"Failed to delete corrupted file {batch_file_name}: {delete_err}")
                     time.sleep(0.1)
                     continue
 
                 # Extract individual samples from batch file BEFORE deleting
-                n_samples_in_file = len(data["labels"])
-                for i in range(n_samples_in_file):
-                    pending_samples.append({
-                        "scans": data["scans"][i].copy(),  # Make copies to release file handles
-                        "valids": data["valids"][i].copy(),
-                        "navs": data["navs"][i].copy(),
-                        "labels": data["labels"][i].copy(),
-                    })
+                try:
+                    n_samples_in_file = len(data["labels"])
+                    for i in range(n_samples_in_file):
+                        pending_samples.append({
+                            "scans": data["scans"][i].copy(),  # Make copies to release file handles
+                            "valids": data["valids"][i].copy(),
+                            "navs": data["navs"][i].copy(),
+                            "labels": data["labels"][i].copy(),
+                        })
+                finally:
+                    # CRITICAL: Close the file handle on Windows
+                    # np.load() memory-maps the file, preventing deletion until it's closed
+                    data.close()
 
-                # Now delete file with retry
+                # Now delete file with retry and proper logging
+                deleted_successfully = False
                 for attempt in range(5):
                     try:
                         batch_file.unlink()
+                        log.info(f"Batch file deleted: {batch_file_name} ({n_samples_in_file} samples)")
+                        deleted_successfully = True
+                        processed_files.add(batch_file_name)
                         break
-                    except (OSError, PermissionError):
+                    except (OSError, PermissionError) as e:
                         if attempt < 4:
+                            log.debug(f"Delete attempt {attempt + 1} failed for {batch_file_name}: {e}, retrying...")
                             time.sleep(0.1)
                         else:
-                            pass  # Ignore if we can't delete, it's not critical
+                            log.error(f"Failed to delete {batch_file_name} after 5 attempts: {e}")
+
+                if not deleted_successfully:
+                    log.error(f"CRITICAL: Could not delete {batch_file_name} - file may be stuck and read again!")
 
             # Take batch_size samples
             batch_list = pending_samples[:self.batch_size]

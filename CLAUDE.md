@@ -53,20 +53,45 @@ This session: Set up continuous monitor that checks:
 - Process alive (crashes detected immediately)
 - Epoch completion lines
 
+### 6. BASH vs POWERSHELL COMMAND DIFFERENCES
+**Critical:** When running bash commands via Bash tool, use bash syntax, NOT PowerShell syntax.
+
+**Common mistakes:**
+- ❌ `Tee-Object` (PowerShell) → ✅ `tee` (bash)
+- ❌ `Get-Content file -Tail 20` (PowerShell) → ✅ `tail -20 file` (bash)
+- ❌ `Select-String` (PowerShell) → ✅ `grep` (bash)
+- ❌ `Get-Process` (PowerShell) → ✅ `ps aux` (bash)
+
+**Rule:** 
+- **Bash tool:** Use bash/POSIX syntax (grep, tail, ps, tee)
+- **PowerShell tool:** Use PowerShell cmdlets (Get-Content, Select-String, Get-Process)
+- **Don't mix:** Mixing causes "command not found" errors and silent failures
+
+**Example fix:**
+```bash
+# ❌ WRONG: Bash tool with PowerShell syntax
+python script.py 2>&1 | Tee-Object -FilePath output.log
+
+# ✅ CORRECT: Bash tool with bash syntax  
+python script.py 2>&1 | tee -a output.log
+```
+
 ## Current Status
 
-**Streaming Training System (WORKING):**
-- 4 parallel workers generate unlimited batches
-- fsync-based atomic writes (0.5s stability wait)
-- File-based queue (~1 GB max disk)
-- Expected: 1-1.5 hours for 30 epochs
+**Streaming Training System (WORKING — not "hanging", just slow on CPU):**
+- 4 parallel workers generate unlimited batches; trainer is the bottleneck.
+- fsync-based atomic writes (0.5s stability wait).
+- File-based queue, capped at 16 files advisory (workers warn but don't block — non-blocking back-pressure).
+- Queue dir is per-run (`data/gen_queue_<timestamp>/`) and now auto-removed on shutdown; startup also reaps anything older than 1 hour.
+- **Realistic per-step time: ~140s on this CPU** (after `src/ml/model.py` forward-pass vectorization landed 2026-05-15). Earlier "1–1.5 hours for 30 epochs" estimate was wrong; with 50 steps/epoch × 30 epochs × 140s that's ~60 hours on CPU. For real runs, move to GPU or shrink `window_size`/sonar resolution.
+- The "stall every 32 samples" the previous session chased was not a leak — it's the natural cycle of one training step (4 batch files of 8 samples + one forward+backward+opt). See `memory/previous_agent_misdiagnosis_corrected.md`.
 
 **To Avoid Future Issues:**
-1. Don't modify train_streaming.py or train.py without subagent review
-2. Add monitoring only via external processes
-3. When bugs occur, investigate root cause first (delegate to Agent)
-4. Document findings in memory before implementing fix
-5. Test fixes on minimal examples first (--workers 2 --epochs 1 --steps 2)
+1. Don't modify train_streaming.py or train.py without subagent review.
+2. Add monitoring only via external processes.
+3. When perf looks "degraded", plot the metric over time first — if it cycles cleanly, name the cycle, don't call it a leak.
+4. Profile compute cost (forward / backward / step) before reaching for `gc.collect()` or memory-leak hypotheses.
+5. Test fixes on minimal examples first (`--workers 2 --epochs 1 --steps 2`).
 
 ## Deployment Checklist
 
