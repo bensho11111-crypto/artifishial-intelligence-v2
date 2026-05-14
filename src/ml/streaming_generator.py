@@ -3,10 +3,13 @@
 import logging
 import multiprocessing
 import numpy as np
+import os
 import random
 import sys
+import tempfile
 import time
 import torch
+import zipfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
@@ -141,16 +144,42 @@ def worker_main(worker_id, n_workers, queue_dir, batch_size, max_queue_depth, st
             batch_navs = np.stack([s["navs"] for s in samples], axis=0)        # (B, T, 7)
             batch_labels = np.stack([s["labels"] for s in samples], axis=0)    # (B, 4)
 
-            # Write directly to final path (trainer checks file size before reading)
-            out_path = queue_dir / f"batch_{worker_id:02d}_{counter:06d}"
-            np.savez_compressed(
-                str(out_path),  # np.savez_compressed automatically adds .npz suffix
-                scans=batch_scans,
-                valids=batch_valids,
-                navs=batch_navs,
-                labels=batch_labels,
-            )
-            log.info(f"Batch {counter} written ({out_path.name})")
+            # Write to temp file with explicit fsync before atomic rename
+            out_path = queue_dir / f"batch_{worker_id:02d}_{counter:06d}.npz"
+
+            # Create temporary file in same directory (ensures same filesystem for atomic rename)
+            fd, tmp_path = tempfile.mkstemp(suffix='.npz', dir=str(queue_dir))
+            try:
+                os.close(fd)  # Close the FD, numpy will open it
+                np.savez_compressed(
+                    tmp_path,
+                    scans=batch_scans,
+                    valids=batch_valids,
+                    navs=batch_navs,
+                    labels=batch_labels,
+                )
+
+                # Force flush to disk to ensure file is complete
+                try:
+                    fd = os.open(tmp_path, os.O_RDONLY | os.O_BINARY)
+                    try:
+                        os.fsync(fd)
+                    finally:
+                        os.close(fd)
+                except Exception:
+                    pass  # If fsync fails, still try rename
+
+                # Atomic rename
+                os.rename(tmp_path, str(out_path))
+                log.info(f"Batch {counter} written ({out_path.name})")
+            except Exception as e:
+                log.error(f"Error writing batch {counter}: {e}")
+                try:
+                    os.unlink(tmp_path)
+                except:
+                    pass
+                raise
+
             counter += 1
         except Exception as e:
             log.error(f"Error in worker loop: {e}", exc_info=True)
@@ -192,12 +221,12 @@ class StreamingDataLoader:
             files = sorted(self.queue_dir.glob("*.npz"))
             if files:
                 # Return oldest file (first in sorted order)
-                # Check file is stable (size doesn't change for 2s)
+                # Brief stability check: worker uses fsync, so just verify file exists and stable
                 f = files[0]
                 try:
                     size1 = f.stat().st_size
                     if size1 > 0:
-                        time.sleep(2.0)  # Wait for write to fully complete
+                        time.sleep(0.5)  # Brief wait for atomic rename to complete
                         size2 = f.stat().st_size
                         if size1 == size2:  # File is stable
                             return f
@@ -215,8 +244,8 @@ class StreamingDataLoader:
                 batch_file = self._wait_for_batch_file()
                 try:
                     data = np.load(batch_file, allow_pickle=False)
-                except (EOFError, ValueError, OSError) as e:
-                    # File was incomplete or deleted, try next
+                except (EOFError, ValueError, OSError, zipfile.BadZipFile) as e:
+                    # File was incomplete, corrupted, or deleted, try next
                     try:
                         batch_file.unlink()
                     except OSError:
