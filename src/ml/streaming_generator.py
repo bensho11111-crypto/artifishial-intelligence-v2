@@ -124,8 +124,8 @@ def worker_main(worker_id, n_workers, queue_dir, batch_size, max_queue_depth, st
 
     while not stop_event.is_set():
         try:
-            # Back-pressure: limit queue depth
-            while len(list(queue_dir.glob("*.npz"))) >= max_queue_depth:
+            # Back-pressure: limit queue depth (check only batch_ files, not temps)
+            while len(list(queue_dir.glob("batch_*.npz"))) >= max_queue_depth:
                 if stop_event.is_set():
                     return
                 time.sleep(0.5)
@@ -169,9 +169,52 @@ def worker_main(worker_id, n_workers, queue_dir, batch_size, max_queue_depth, st
                 except Exception:
                     pass  # If fsync fails, still try rename
 
-                # Atomic rename (os.replace works cross-platform, handles existing files on Windows)
-                os.replace(tmp_path, str(out_path))
-                log.info(f"Batch {counter} written ({out_path.name})")
+                # Stagger worker rename operations with random delay to reduce Windows filesystem collisions
+                time.sleep(random.uniform(0.05, 0.5))
+
+                # Atomic rename with exponential backoff retry for Windows race conditions
+                max_retries = 5
+                retry_delay = 0.2
+                retry_start_time = time.time()
+
+                # Pre-rename diagnostics
+                dest_path_str = str(out_path.resolve())
+                if os.path.exists(dest_path_str):
+                    try:
+                        dest_stat = os.stat(dest_path_str)
+                        log.debug(f"Destination exists before rename: size={dest_stat.st_size}, mtime={dest_stat.st_mtime:.1f}")
+                    except OSError:
+                        pass
+                else:
+                    log.debug(f"Destination does not exist before rename")
+
+                for attempt in range(max_retries):
+                    try:
+                        os.replace(tmp_path, dest_path_str)
+                        elapsed = time.time() - retry_start_time
+                        if attempt > 0:
+                            log.info(f"Batch {counter} written after retry {attempt + 1} (total_time={elapsed:.2f}s, file_size={os.path.getsize(dest_path_str)})")
+                        else:
+                            log.info(f"Batch {counter} written ({out_path.name})")
+                        break
+                    except OSError as e:
+                        # Log destination status on each retry
+                        dest_exists = os.path.exists(dest_path_str)
+                        dest_info = f"exists={dest_exists}"
+                        if dest_exists:
+                            try:
+                                dest_stat = os.stat(dest_path_str)
+                                dest_info += f", size={dest_stat.st_size}"
+                            except OSError:
+                                dest_info += ", stat_failed"
+
+                        if attempt < max_retries - 1:
+                            log.warning(f"Rename attempt {attempt + 1} failed: {e.winerror if hasattr(e, 'winerror') else e.errno} ({dest_info}), retry in {retry_delay:.1f}s")
+                            time.sleep(retry_delay)
+                            retry_delay *= 2  # Exponential backoff: 0.2s, 0.4s, 0.8s
+                        else:
+                            log.error(f"Rename failed after {max_retries} attempts")
+                            raise
             except Exception as e:
                 log.error(f"Error writing batch {counter}: {e}")
                 try:
@@ -218,7 +261,8 @@ class StreamingDataLoader:
             if time.time() - start_time > timeout:
                 raise TimeoutError(f"No batch file after {timeout}s")
 
-            files = sorted(self.queue_dir.glob("*.npz"))
+            # Only match batch files (batch_XX_XXXXXX.npz), not temp files (tmpXXXXXXXX.npz)
+            files = sorted(self.queue_dir.glob("batch_*.npz"))
             if files:
                 # Return oldest file (first in sorted order)
                 # Brief stability check: worker uses fsync, so just verify file exists and stable

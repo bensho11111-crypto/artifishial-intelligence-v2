@@ -6,8 +6,11 @@ Minimal disk footprint (~1 GB max queue), 4× faster than single-process.
 
 import argparse
 import dataclasses
+import datetime
 import multiprocessing
 import numpy as np
+import os
+import shutil
 import sys
 import time
 import torch
@@ -109,20 +112,26 @@ def main():
     device = torch.device(args.device)
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
-    queue_dir = Path("data/gen_queue")
 
-    # Clean queue dir (ignore locked files from previous runs)
+    # Create timestamped queue directory to avoid file locking issues from previous runs
+    ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    queue_dir = Path(f"data/gen_queue_{ts}")
     queue_dir.mkdir(parents=True, exist_ok=True)
-    for f in queue_dir.glob("*.npz"):
-        try:
-            f.unlink()
-        except (OSError, PermissionError):
-            pass  # File locked by previous worker, will be overwritten
-    for f in queue_dir.glob("*.tmp"):
-        try:
-            f.unlink()
-        except (OSError, PermissionError):
-            pass
+
+    # Optional: clean up old queue directories (older than 1 day, keep recent ones for debugging)
+    base_queue_dir = Path("data")
+    if base_queue_dir.exists():
+        now = time.time()
+        for old_queue in base_queue_dir.glob("gen_queue_*"):
+            if old_queue.is_dir():
+                mtime = os.path.getmtime(str(old_queue))
+                age_seconds = now - mtime
+                if age_seconds > 86400:  # 1 day
+                    try:
+                        shutil.rmtree(str(old_queue))
+                        print(f"Cleaned old queue dir: {old_queue.name}")
+                    except (OSError, PermissionError) as e:
+                        print(f"Could not clean {old_queue.name}: {e}")
 
     print("=" * 70)
     print("STREAMING TRAINING")
