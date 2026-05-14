@@ -7,6 +7,7 @@ Functions:
     - train_epoch: one pass over training data with backprop
     - eval_epoch: one pass over validation data with metrics computation
 """
+import gc
 import torch
 import torch.nn as nn
 import numpy as np
@@ -60,6 +61,10 @@ def train_epoch(model, train_loader, loss_fn, optimizer, device, grad_clip=1.0, 
 
         total_loss += loss.item()
         n_batches += 1
+
+        # Periodically collect garbage to free accumulated tensors
+        if n_batches % 10 == 0:
+            gc.collect()
 
     return total_loss / n_batches
 

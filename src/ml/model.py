@@ -162,6 +162,12 @@ class FishCatchTransformer(nn.Module):
         # Output projection to logits
         self.logits_proj = nn.Linear(cfg.d_model, 1)
 
+        # Cache causal masks as buffers (registered so they move with model)
+        # Pre-create masks for common sizes to avoid allocation in forward pass
+        for size in [10, 11, 30, 31]:  # Local (10), Long-range (30), + 1 margin each
+            mask = torch.triu(torch.ones(size, size, dtype=torch.bool), diagonal=1)
+            self.register_buffer(f'_mask_{size}', mask, persistent=False)
+
     def forward(
         self,
         scans: torch.Tensor,
@@ -219,7 +225,7 @@ class FishCatchTransformer(nn.Module):
         # Local stream: last 10 ticks
         local_in = tick_emb[:, -self.cfg.window_local:, :]  # (B, min(T, 10), d_model)
         local_size = min(T, self.cfg.window_local)
-        local_mask = causal_mask(local_size).to(tick_emb.device)
+        local_mask = self.get_causal_mask(local_size)
         local_out = self.local_transformer(local_in, mask=local_mask)  # (B, local_size, d_model)
         local_out = local_out[:, -1, :]  # (B, d_model) — take last token
 
@@ -247,7 +253,7 @@ class FishCatchTransformer(nn.Module):
                 lr_in = torch.cat([lr_in, padding], dim=1)  # (B, 30, d_model)
 
         lr_size = lr_in.shape[1]
-        lr_mask = causal_mask(lr_size).to(tick_emb.device)
+        lr_mask = self.get_causal_mask(lr_size)
         lr_out = self.lr_transformer(lr_in, mask=lr_mask)  # (B, lr_size, d_model)
         lr_out = lr_out[:, -1, :]  # (B, d_model) — take last token
 
@@ -267,3 +273,11 @@ class FishCatchTransformer(nn.Module):
         logits = self.logits_proj(species_out).squeeze(-1)  # (B, n_species)
 
         return logits
+
+    def get_causal_mask(self, size: int) -> torch.Tensor:
+        # Try to get pre-registered buffer for common sizes
+        attr_name = f'_mask_{size}'
+        if hasattr(self, attr_name):
+            return getattr(self, attr_name)
+        # Fallback: create mask on-the-fly if size not pre-registered
+        return torch.triu(torch.ones(size, size, dtype=torch.bool, device=next(self.parameters()).device), diagonal=1)
