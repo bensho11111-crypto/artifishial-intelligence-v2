@@ -1,5 +1,6 @@
 """Streaming batch generation for on-the-fly training without pre-generation."""
 
+import gc
 import logging
 import multiprocessing
 import numpy as np
@@ -144,6 +145,9 @@ def worker_main(worker_id, n_workers, queue_dir, batch_size, max_queue_depth, st
             batch_navs = np.stack([s["navs"] for s in samples], axis=0)        # (B, T, 7)
             batch_labels = np.stack([s["labels"] for s in samples], axis=0)    # (B, 4)
 
+            # Release samples list to free memory from temp arrays
+            del samples
+
             # Write to temp file with explicit fsync before atomic rename
             out_path = queue_dir / f"batch_{worker_id:02d}_{counter:06d}.npz"
 
@@ -223,6 +227,8 @@ def worker_main(worker_id, n_workers, queue_dir, batch_size, max_queue_depth, st
                     pass
                 raise
 
+            # Force garbage collection to release forward_scan temporaries
+            gc.collect()
             counter += 1
         except Exception as e:
             log.error(f"Error in worker loop: {e}", exc_info=True)
